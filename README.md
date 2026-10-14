@@ -1,6 +1,6 @@
-# CryptoWallet
+# Lemma
 
-Aplicação web de carteira de criptoativos custodial para a rede Ethereum Sepolia Testnet, que permite a um usuário iniciante criar conta, enviar e acompanhar transações e consultar informações básicas de mercado — sem precisar gerar, guardar ou gerenciar diretamente suas próprias chaves privadas.
+Aplicação web de carteira de criptoativos custodial para a rede Ethereum Sepolia Testnet, que permi>
 
 ## Integrantes
 
@@ -8,3 +8,9 @@ Aplicação web de carteira de criptoativos custodial para a rede Ethereum Sepol
 - Lucas Athanasio Bueno de Andrade
 - Guillermo Perdomo Sevilla Neto
 - Nicollas Fabbio
+
+## Documentação de fluxos e contratos
+
+Os fluxos do sistema (visão geral e E1–E9) estão no repositório do frontend: https://github.com/Igo>
+
+Os contratos deste módulo estão em docs/contratos/.
