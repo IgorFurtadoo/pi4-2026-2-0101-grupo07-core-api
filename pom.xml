@@ -15,11 +15,13 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- Mesmas versões do Blockchain Service. -->
+        <!-- Mesmas versões do Blockchain Service (Javalin, Jackson, Logback, JUnit, Hibernate, MySQL). -->
         <javalin.version>7.2.4</javalin.version>
         <jackson.version>2.22.4</jackson.version>
         <logback.version>1.5.38</logback.version>
         <junit.version>5.14.4</junit.version>
+        <hibernate.version>7.4.15.Final</hibernate.version>
+        <mysql.version>26.10.0</mysql.version>
         <!-- Última versão estável na Maven Central (0.10.2, fev/2023). -->
         <bcrypt.version>0.10.2</bcrypt.version>
     </properties>
@@ -35,6 +37,24 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
+        </dependency>
+        <!-- Acesso ao banco: Hibernate em modo validate contra o schema.sql. -->
+        <dependency>
+            <groupId>org.hibernate.orm</groupId>
+            <artifactId>hibernate-core</artifactId>
+            <version>${hibernate.version}</version>
+        </dependency>
+        <!-- Pool de conexões HikariCP para o Hibernate. -->
+        <dependency>
+            <groupId>org.hibernate.orm</groupId>
+            <artifactId>hibernate-hikaricp</artifactId>
+            <version>${hibernate.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>${mysql.version}</version>
+            <scope>runtime</scope>
         </dependency>
         <!-- Hash de senha bcrypt (seção 2 do desenho). -->
         <dependency>

@@ -5,6 +5,17 @@
         </encoder>
     </appender>
 
+    <!-- Menos ruído do Hibernate na subida. O SQL não é logado. -->
+    <logger name="org.hibernate" level="WARN"/>
+
+    <!-- Desligados porque as mensagens deles podem trazer dado sensível:
+         o SqlExceptionHelper repete o texto do MySQL ("Duplicate entry '<e-mail>' ...");
+         o HikariCP loga a falha de conexão com host e usuário do banco.
+         As falhas continuam visíveis pelo log do Main, do UserService e do ErrorHandler.
+         Os avisos do pool (conexão lenta, vazamento) ficam silenciados. -->
+    <logger name="org.hibernate.engine.jdbc.spi.SqlExceptionHelper" level="OFF"/>
+    <logger name="com.zaxxer.hikari" level="OFF"/>
+
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
     </root>

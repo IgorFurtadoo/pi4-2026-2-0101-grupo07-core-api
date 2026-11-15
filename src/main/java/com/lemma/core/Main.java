@@ -2,16 +2,20 @@ package com.lemma.core;
 
 import com.lemma.core.config.AppConfig;
 import com.lemma.core.controller.ErrorHandler;
+import com.lemma.core.repository.Database;
 import io.javalin.Javalin;
+import org.hibernate.SessionFactory;
+import org.hibernate.tool.schema.spi.SchemaManagementException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Ponto de entrada do Core API.
  *
- * Lê a configuração e sobe o Javalin. Se faltar variável ou alguma for inválida,
- * encerra com código 1 e uma mensagem clara, antes de abrir a porta. As peças são
- * montadas à mão aqui, sem injeção de dependência. As rotas entram a partir do C2.
+ * Lê a configuração, abre o acesso ao banco (o Hibernate confere o esquema) e sobe
+ * o Javalin. Se faltar variável, alguma for inválida, o banco estiver fora ou o
+ * esquema não bater com as entidades, encerra com código 1 e uma mensagem clara,
+ * antes de abrir a porta. As peças são montadas à mão aqui, sem injeção de dependência.
  */
 public class Main {
 
@@ -27,19 +31,52 @@ public class Main {
             return;
         }
 
+        SessionFactory sessionFactory;
+        try {
+            sessionFactory = Database.createSessionFactory(config);
+        } catch (RuntimeException e) {
+            logDatabaseStartupFailure(e);
+            System.exit(1);
+            return;
+        }
+
         Javalin app = Javalin.create(javalin -> {
             // Rota existente com método errado responde 405, não 404.
             javalin.http.prefer405over404 = true;
             ErrorHandler.register(javalin);
         }).start(config.serverPort());
 
-        // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho
-        // e o Javalin termina as requisições em andamento antes de fechar a porta.
+        // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
+        // o Javalin termina as requisições em andamento e só depois o banco é fechado.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Desligando o Core API");
             app.stop();
+            sessionFactory.close();
         }));
 
         log.info("Core API no ar na porta {} com {}", config.serverPort(), config);
+    }
+
+    /**
+     * Registra só a classe da exceção: a mensagem do driver pode trazer o host,
+     * o usuário do banco ou a URL JDBC.
+     */
+    private static void logDatabaseStartupFailure(RuntimeException e) {
+        if (hasCause(e, SchemaManagementException.class)) {
+            log.error("Falha ao iniciar o acesso ao banco ({}): o esquema do banco não bate com as entidades"
+                    + " (Hibernate validate); confira o schema.sql", e.getClass().getSimpleName());
+        } else {
+            log.error("Falha ao iniciar o acesso ao banco ({}): não foi possível conectar ao banco;"
+                    + " confira o core-db e DB_URL, DB_USER e DB_PASSWORD", e.getClass().getSimpleName());
+        }
+    }
+
+    private static boolean hasCause(Throwable e, Class<? extends Throwable> type) {
+        for (Throwable current = e; current != null; current = current.getCause()) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
