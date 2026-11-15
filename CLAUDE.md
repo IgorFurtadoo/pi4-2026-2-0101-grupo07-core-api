@@ -68,12 +68,12 @@ Em caso de divergência entre o desenho e as fichas, pare e pergunte.
 | Passo | O que é | Card (OP) |
 |---|---|---|
 | C1 | Esqueleto, compose, esquema, `AppConfig` | H01.5 #1315, H01.2 #865 (parte Core API) |
-| C2 | Cadastro (CT1) | informado no prompt do passo |
+| C2 | Cadastro (CT1) | H02.2 #869 |
 | C3 | Login, JWT, filtro de token, CORS, ADR 0004 | H03.1 #871 |
-| C4 | Saldo (CT6) | informado no prompt do passo |
-| C5 | Envio (CT9) | informado no prompt do passo |
+| C4 | Saldo (CT6) | H04.2 #874 |
+| C5 | Envio (CT9) | H05.2 #877 |
 | C6 | Acompanhamento e webhook (CT13, CT15) | H08.2 #886 |
-| C7 | Mercado (CT17) contra servidor falso | informado no prompt do passo |
+| C7 | Mercado (CT17) contra servidor falso | H06.2 #880 |
 | C8 | Rate limiting | H10.1 #882 |
 | C9 | Integração ponta a ponta com o Blockchain Service | H07.2 #884, H04.4 #1317 (parte) |
 
@@ -95,6 +95,7 @@ O `.env.example` traz valores de exemplo propositalmente recusados: o serviço n
 
 | Para quê | Comando |
 |---|---|
+| Criar a rede compartilhada com o Blockchain Service (uma vez por máquina, antes do primeiro `docker compose up`) | `docker network create lemma-dev` |
 | Testes | `mvn clean test` |
 | Build do jar (`target/core-api.jar`) | `mvn package` |
 | Build da imagem | `docker compose build` |

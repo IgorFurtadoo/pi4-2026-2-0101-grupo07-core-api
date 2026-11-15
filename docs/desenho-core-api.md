@@ -82,9 +82,11 @@ O `Main` lê tudo em uma classe `AppConfig` e falha na subida se faltar variáve
 
 Por que 15 s nos dois tempos: o CT7 do Blockchain Service pode esperar até 10 s pelo RPC, e o CT18 faz duas chamadas à CoinGecko em sequência. O Core API precisa esperar mais do que eles, senão devolve 502 quando o outro módulo ainda ia responder.
 
-### 3.3 Rede em desenvolvimento [Aberto, com recomendação]
+### 3.3 Rede em desenvolvimento [Decidido]
 
-Cada módulo tem o seu compose de desenvolvimento, e o compose do sistema ainda não existe. O Core API precisa alcançar o Blockchain Service, e o webhook faz o caminho inverso. Recomendação até o compose do sistema existir: uma rede Docker externa `lemma-dev` (`docker network create lemma-dev`), declarada como `external` nos dois composes, com o `blockchain-service` e o `core-api` nela. O URL do webhook do Blockchain Service passa a ser `http://core-api:8080/webhooks/tasks`. Isso muda o compose do repositório `-blockchain` (um commit pequeno, no passo C9).
+Cada módulo tem o seu compose de desenvolvimento, e o compose do sistema ainda não existe. O Core API precisa alcançar o Blockchain Service (já no cadastro, passo C2), e o webhook faz o caminho inverso (passo C6). Solução até o compose do sistema existir: uma rede Docker externa `lemma-dev` (`docker network create lemma-dev`, uma vez por máquina), declarada como `external` nos dois composes. O `blockchain-service` e o `core-api` entram nela **além** da rede padrão do próprio compose, que continua sendo a do banco; o banco de cada módulo **não** entra na `lemma-dev`. O Core API chama o Blockchain Service em `http://blockchain-service:8081`, e o Blockchain Service avisa o Core API em `http://core-api:8080/webhooks/tasks` (valor que o `.env.example` do Blockchain Service já traz).
+
+Ajuste de 15/11/2026, decidido pelo responsável do módulo (Igor): a rede entra no passo **C2**, e não no C9 como estava no primeiro desenho, porque o cadastro real já precisa alcançar o Blockchain Service. A mudança no compose do Blockchain Service é um commit pequeno no repositório `-blockchain`, feito antes do C2.
 
 ## 4. Estrutura de código [Sugestão]
 
@@ -372,7 +374,7 @@ Rotas inexistentes: 404 e 405 com o corpo padrão do Javalin, como no Blockchain
 6. Um único método `applyTaskState` com atualização condicional para webhook e consulta ativa (seção 8.4).
 7. Rate limiting global, em memória, janela deslizante, 10 requisições por 60 s (seção 8.6).
 8. `BlockchainClient` como interface (para testes); `MarketDataClient` concreto (seção 4.2).
-9. Rede Docker externa `lemma-dev` para desenvolvimento enquanto não houver compose do sistema (seção 3.3).
+9. Rede Docker externa `lemma-dev` para desenvolvimento enquanto não houver compose do sistema (seção 3.3). Ajustada em 15/11/2026: entra no passo C2, não no C9.
 10. ADR 0004 para a autenticação (JWT + bcrypt), escrito no passo C3: a decisão tem alternativas reais (sessão em banco, `jjwt`, Argon2) e é o tipo de justificativa que a banca pergunta.
 
 ### Em aberto [Aberto]
@@ -387,18 +389,18 @@ Rotas inexistentes: 404 e 405 com o corpo padrão do Javalin, como no Blockchain
 
 ## 13. Ordem de implementação e critério de pronto
 
-Um passo por card do OpenProject, um commit por mudança coerente, todos com `OP#<id>` no rodapé. Cards marcados "a identificar" ainda não tiveram o número conferido no OpenProject.
+Um passo por card do OpenProject, um commit por mudança coerente, todos com `OP#<id>` no rodapé. Os números dos cards foram conferidos no OpenProject em 15/11/2026.
 
 | # | Passo | Classes principais | Card | Pronto quando |
 |---|---|---|---|---|
 | C1 | Esqueleto, Dockerfile, MySQL, `.env`, `AppConfig`, `schema.sql`, `ApiException` e handler central, `docs/desenho-core-api.md` no repositório | `Main`, `AppConfig`, `ApiException` | H01.5 (#1315, parte Core API) e H01.2 (#865, parte Core API) | `docker compose up` sobe serviço e banco; falta de variável derruba a subida com mensagem clara; `JWT_SECRET` curto ou de exemplo é recusado; o `schema.sql` (as duas tabelas) é aplicado no banco ao criar o volume. Sem código de banco neste passo: o Hibernate entra no C2 |
-| C2 | Cadastro: `POST /users`, CT4 pelo cliente, hash de senha | `PasswordHasher`, `User`, `UserRepository`, `BlockchainClient` (interface e `createWallet`), `UserService`, `UserController` | a identificar (provável H02.2) | Cadastro devolve 201 com o endereço criado pelo Blockchain Service real; senha no banco é bcrypt; Hibernate `validate` passa para `app_user`; e-mail repetido dá 409; carteira indisponível dá 502 sem gravar usuário |
+| C2 | Cadastro: `POST /users`, CT4 pelo cliente, hash de senha | `PasswordHasher`, `User`, `UserRepository`, `BlockchainClient` (interface e `createWallet`), `UserService`, `UserController` | H02.2 (#869) | Cadastro devolve 201 com o endereço criado pelo Blockchain Service real; senha no banco é bcrypt; Hibernate `validate` passa para `app_user`; e-mail repetido dá 409; carteira indisponível dá 502 sem gravar usuário; o `core-api` do compose entra na rede externa `lemma-dev` e alcança o `blockchain-service` por `http://blockchain-service:8081` |
 | C3 | Login, JWT, filtro de token, CORS, ADR 0004 | `JwtService`, `AuthService`, `AuthController`, `TokenFilter` | H03.1 (#871) | Login devolve token; token ausente, inválido ou vencido dá 401 `TOKEN_INVALID`; pré-requisição `OPTIONS` passa; e-mail inexistente e senha errada são indistinguíveis; ADR 0004 aceito |
-| C4 | Saldo: `GET /wallet/balance` | `WalletService`, `WalletController`, `BlockchainClient.getBalance` | a identificar (provável H04.2) | Saldo real da carteira abastecida, lido pelo token; 502 com o Blockchain Service parado |
-| C5 | Envio: `POST /transactions` | `EthTransaction`, `EthTransactionRepository`, `TransactionService.send`, `TransactionController`, `BlockchainClient.requestSubmission` | a identificar (provável H05.2) | 202 com `taskId`; linha `PENDING` no banco; Hibernate `validate` passa para `eth_transaction`; 400 do Blockchain Service repassado; 502 não grava nada |
+| C4 | Saldo: `GET /wallet/balance` | `WalletService`, `WalletController`, `BlockchainClient.getBalance` | H04.2 (#874) | Saldo real da carteira abastecida, lido pelo token; 502 com o Blockchain Service parado |
+| C5 | Envio: `POST /transactions` | `EthTransaction`, `EthTransactionRepository`, `TransactionService.send`, `TransactionController`, `BlockchainClient.requestSubmission` | H05.2 (#877) | 202 com `taskId`; linha `PENDING` no banco; Hibernate `validate` passa para `eth_transaction`; 400 do Blockchain Service repassado; 502 não grava nada |
 | C6 | Acompanhamento: `GET /transactions/{taskId}` com consulta ativa, e webhook `POST /webhooks/tasks` | `applyTaskState`, `updateIfPending`, `ServiceKeyFilter`, `WebhookController`, `BlockchainClient.getTask` | H08.2 (#886) | Os testes da seção 11 (item 2) passam; ficha CT15 deste repositório alinhada com a do `-blockchain` |
-| C7 | Mercado: `GET /market/{assetId}` contra o External Data Service falso | `MarketService`, `MarketController`, `MarketDataClient` | a identificar (provável H06.2) | Resposta do CT17 montada a partir do falso; 404 para `assetId` ruim sem chamar o falso; 502 quando o falso falha |
+| C7 | Mercado: `GET /market/{assetId}` contra o External Data Service falso | `MarketService`, `MarketController`, `MarketDataClient` | H06.2 (#880) | Resposta do CT17 montada a partir do falso; 404 para `assetId` ruim sem chamar o falso; 502 quando o falso falha |
 | C8 | Rate limiting do mercado | `SlidingWindowRateLimiter` | H10.1 (#882) | Teste automatizado: as requisições além do limite recebem 429 com `Retry-After` e o falso não as vê |
-| C9 | Integração com o Blockchain Service real: rede `lemma-dev`, webhook, roteiro ponta a ponta, teste do `UPDATE` condicional no MySQL | `scripts/e2e-demo.sh`, compose dos dois módulos | H07.2 (#884) e H04.4 (#1317, parte) | Cadastrar, entrar, abastecer na torneira, enviar e ver `CONFIRMED` pelo Core API, com o webhook chegando; o roteiro vale também para o estado final por consulta ativa (derrubando o webhook) |
+| C9 | Integração com o Blockchain Service real: webhook, roteiro ponta a ponta, teste do `UPDATE` condicional no MySQL | `scripts/e2e-demo.sh` | H07.2 (#884) e H04.4 (#1317, parte) | Cadastrar, entrar, abastecer na torneira, enviar e ver `CONFIRMED` pelo Core API, com o webhook chegando; o roteiro vale também para o estado final por consulta ativa (derrubando o webhook) |
 
 Dependências: C1 antes de todos; C3 antes de C4 a C8 (precisam do token); C5 antes de C6; C7 e C8 só precisam de C3 e do servidor falso (não dependem de Blockchain Service nem do Lucas); C9 depende de C1 a C6. A **ligação com o External Data Service real** fica fora desta lista: depende do módulo do Lucas existir (H06.1 #879) e entra no teste de carga H10.2 (#889).
