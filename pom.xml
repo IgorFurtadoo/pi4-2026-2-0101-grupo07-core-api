@@ -20,6 +20,8 @@
         <jackson.version>2.22.4</jackson.version>
         <logback.version>1.5.38</logback.version>
         <junit.version>5.14.4</junit.version>
+        <!-- Última versão estável na Maven Central (0.10.2, fev/2023). -->
+        <bcrypt.version>0.10.2</bcrypt.version>
     </properties>
 
     <dependencies>
@@ -33,6 +35,12 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
+        </dependency>
+        <!-- Hash de senha bcrypt (seção 2 do desenho). -->
+        <dependency>
+            <groupId>at.favre.lib</groupId>
+            <artifactId>bcrypt</artifactId>
+            <version>${bcrypt.version}</version>
         </dependency>
         <!-- Implementação do SLF4J (a API do SLF4J vem com o Javalin). -->
         <dependency>
