@@ -9,10 +9,13 @@
     <logger name="org.hibernate" level="WARN"/>
 
     <!-- Desligados porque as mensagens deles podem trazer dado sensível:
-         o SqlExceptionHelper repete o texto do MySQL ("Duplicate entry '<e-mail>' ...");
+         o erro SQL repete o texto do MySQL ("Duplicate entry '<e-mail>' ..."); no
+         Hibernate 7 ele sai pelo logger org.hibernate.orm.jdbc.error (nas versões
+         anteriores, pelo SqlExceptionHelper);
          o HikariCP loga a falha de conexão com host e usuário do banco.
          As falhas continuam visíveis pelo log do Main, do UserService e do ErrorHandler.
          Os avisos do pool (conexão lenta, vazamento) ficam silenciados. -->
+    <logger name="org.hibernate.orm.jdbc.error" level="OFF"/>
     <logger name="org.hibernate.engine.jdbc.spi.SqlExceptionHelper" level="OFF"/>
     <logger name="com.zaxxer.hikari" level="OFF"/>
 
