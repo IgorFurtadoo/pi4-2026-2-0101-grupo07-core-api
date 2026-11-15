@@ -32,6 +32,16 @@ services:
     ports:
       # Só no loopback. O SERVER_PORT do .env precisa continuar 8080.
       - "127.0.0.1:8080:8080"
+    # A rede padrão (a do core-db) e a lemma-dev, onde está o blockchain-service.
+    networks:
+      - default
+      - lemma-dev
 
 volumes:
   core-db-data:
+
+networks:
+  # Rede compartilhada com o Blockchain Service em desenvolvimento (docker network create lemma-dev).
+  # O core-db não entra nela.
+  lemma-dev:
+    external: true
