@@ -44,3 +44,5 @@ Campos devolvidos na leitura de um usuário.
 | Ler por `id` ou `email` inexistente | Nenhum registro. O Core API trata como usuário não encontrado (no login vira HTTP 401, `code` INVALID_CREDENTIALS) |
 | Gravar sem um campo obrigatório | Violação de campo obrigatório. O Core API responde HTTP 500, `code` INTERNAL_ERROR |
 | Banco do Core API indisponível | Falha de conexão. O Core API responde HTTP 500, `code` INTERNAL_ERROR |
+
+Nota (emenda do H02.2, decidida pelo responsável do módulo (Igor)): o `email` é gravado normalizado (espaços nas pontas removidos e letras em minúsculas), com no máximo 254 caracteres, e a leitura por `email` usa a mesma normalização. Assim a restrição de unicidade vale também para o mesmo e-mail escrito com outra caixa.
