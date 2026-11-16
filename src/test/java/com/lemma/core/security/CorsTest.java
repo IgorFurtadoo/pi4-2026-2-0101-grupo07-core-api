@@ -77,12 +77,16 @@ class CorsTest {
         return response.headers().firstValue("Access-Control-Allow-Origin");
     }
 
-    /** Nenhum Access-Control-Allow-* na resposta. */
+    private static List<String> exposeHeaders(HttpResponse<String> response) {
+        return response.headers().allValues("Access-Control-Expose-Headers");
+    }
+
+    /** Nenhum Access-Control-* na resposta (nem Allow-*, nem Expose-Headers). */
     private static void assertNoCorsPermission(HttpResponse<String> response, String origin) {
-        List<String> allowHeaders = response.headers().map().keySet().stream()
-                .filter(name -> name.toLowerCase(Locale.ROOT).startsWith("access-control-allow"))
+        List<String> corsHeaders = response.headers().map().keySet().stream()
+                .filter(name -> name.toLowerCase(Locale.ROOT).startsWith("access-control-"))
                 .toList();
-        assertEquals(List.of(), allowHeaders, origin);
+        assertEquals(List.of(), corsHeaders, origin);
     }
 
     /** Valores do Vary, juntando linhas repetidas e listas separadas por vírgula. */
@@ -217,6 +221,40 @@ class CorsTest {
 
         assertEquals(200, response.statusCode());
         assertNoCorsPermission(response, "sem Origin");
+    }
+
+    // ---------- Expose-Headers (Retry-After do 429 do CT17) ----------
+
+    @Test
+    void allowedOriginGetsRetryAfterExposedOnSuccessAndOnErrors() throws Exception {
+        HttpResponse<String> ok = loginFrom(ORIGIN);
+        HttpResponse<String> unauthorized = app.send(app.request("/test/protected")
+                .header("Origin", ORIGIN).GET().build());
+        HttpResponse<String> notFound = app.send(app.request("/nao-existe").header("Origin", ORIGIN).GET().build());
+
+        assertEquals(List.of(200, 401, 404),
+                List.of(ok.statusCode(), unauthorized.statusCode(), notFound.statusCode()));
+        for (HttpResponse<String> response : List.of(ok, unauthorized, notFound)) {
+            assertEquals(List.of("Retry-After"), exposeHeaders(response), response.uri().toString());
+        }
+    }
+
+    @Test
+    void notAllowedOriginAndNoOriginGetNoExposeHeaders() throws Exception {
+        for (String origin : NOT_ALLOWED) {
+            HttpResponse<String> unauthorized = app.send(app.request("/test/protected")
+                    .header("Origin", origin).GET().build());
+
+            assertEquals(401, unauthorized.statusCode(), origin);
+            assertEquals(List.of(), exposeHeaders(unauthorized), origin);
+            assertNoCorsPermission(unauthorized, origin);
+        }
+
+        HttpResponse<String> withoutOrigin = app.send(app.request("/test/protected").GET().build());
+
+        assertEquals(401, withoutOrigin.statusCode());
+        assertEquals(List.of(), exposeHeaders(withoutOrigin));
+        assertNoCorsPermission(withoutOrigin, "sem Origin");
     }
 
     // ---------- Vary ----------

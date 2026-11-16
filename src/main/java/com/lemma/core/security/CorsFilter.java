@@ -16,9 +16,14 @@ import io.javalin.http.HandlerType;
  *   inclusive os erros (401 TOKEN_INVALID, 404), porque o cabeçalho é gravado antes
  *   e o handler de erros não o apaga. Sem ele, o navegador esconderia o erro do
  *   Frontend.
+ * - toda resposta para a origem permitida leva também
+ *   Access-Control-Expose-Headers: Retry-After. Sem ele, o navegador não deixa o
+ *   JavaScript do Frontend ler o Retry-After do 429 RATE_LIMIT_EXCEEDED (CT17),
+ *   porque não é um cabeçalho que o navegador já libera. Na pré-requisição ele é
+ *   inofensivo (o navegador o ignora), e assim a regra fica uma só.
  *
  * Só a origem configurada (CORS_ALLOWED_ORIGIN), comparada como texto exato. Outra
- * origem não recebe nenhum cabeçalho Access-Control-Allow-*: a requisição segue
+ * origem não recebe nenhum cabeçalho Access-Control-*: a requisição segue
  * como se não houvesse CORS, e o navegador bloqueia a leitura da resposta. Sem
  * credenciais (cookies) e sem Max-Age.
  *
@@ -30,6 +35,7 @@ public class CorsFilter {
 
     static final String ALLOWED_METHODS = "GET, POST, OPTIONS";
     static final String ALLOWED_HEADERS = "Authorization, Content-Type";
+    static final String EXPOSED_HEADERS = "Retry-After";
 
     private final String allowedOrigin;
 
@@ -48,6 +54,7 @@ public class CorsFilter {
             return;
         }
         ctx.header("Access-Control-Allow-Origin", origin);
+        ctx.header("Access-Control-Expose-Headers", EXPOSED_HEADERS);
 
         boolean preflight = HandlerType.OPTIONS.equals(ctx.method())
                 && ctx.header("Access-Control-Request-Method") != null;
