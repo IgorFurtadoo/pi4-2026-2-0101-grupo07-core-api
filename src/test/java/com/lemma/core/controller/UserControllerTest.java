@@ -1,43 +1,34 @@
 package com.lemma.core.controller;
 
-import com.lemma.core.Main;
-import com.lemma.core.security.PasswordHasher;
+import com.lemma.core.TestApp;
 import com.lemma.core.service.FakeBlockchainClient;
 import com.lemma.core.service.InMemoryUserRepository;
-import com.lemma.core.service.UserService;
-import io.javalin.Javalin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
- * POST /users por HTTP real, com a mesma configuração do Main (Main.createApp),
+ * POST /users por HTTP real, com a mesma configuração do Main (TestApp),
  * UserService real, Blockchain Service falso e repository em memória.
  */
 class UserControllerTest {
 
-    private static final HttpClient http = HttpClient.newHttpClient();
-
     private static final String REQUEST_INVALID =
             "{\"code\":\"REQUEST_INVALID\",\"message\":\"Corpo da requisição inválido.\"}";
 
-    private final InMemoryUserRepository repository = new InMemoryUserRepository();
-    private final FakeBlockchainClient blockchain = new FakeBlockchainClient();
-    private Javalin app;
+    private final TestApp app = new TestApp();
+    private final InMemoryUserRepository repository = app.repository;
+    private final FakeBlockchainClient blockchain = app.blockchain;
 
     @BeforeEach
     void startServer() {
-        UserService service = new UserService(repository, new PasswordHasher(4), blockchain);
-        app = Main.createApp(new UserController(service)).start(0);
+        app.start();
     }
 
     @AfterEach
@@ -46,11 +37,7 @@ class UserControllerTest {
     }
 
     private HttpResponse<String> postUsers(String body) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + app.port() + "/users"))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-        return http.send(request, HttpResponse.BodyHandlers.ofString());
+        return app.postJson("/users", body);
     }
 
     private void assertRequestInvalid(String body) throws Exception {
@@ -144,14 +131,10 @@ class UserControllerTest {
 
     @Test
     void getOnUsersIs405() throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + app.port() + "/users")).build();
-
-        assertEquals(405, http.send(request, HttpResponse.BodyHandlers.ofString()).statusCode());
+        assertEquals(405, app.send(app.request("/users").GET().build()).statusCode());
     }
 
     private static String code(HttpResponse<String> response) {
-        String body = response.body();
-        int start = body.indexOf("\"code\":\"") + "\"code\":\"".length();
-        return body.substring(start, body.indexOf('"', start));
+        return TestApp.code(response);
     }
 }

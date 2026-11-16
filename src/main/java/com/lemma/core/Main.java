@@ -4,11 +4,14 @@ import com.lemma.core.client.BlockchainClient;
 import com.lemma.core.client.HttpBlockchainClient;
 import com.lemma.core.config.AppConfig;
 import com.lemma.core.config.JsonConfig;
+import com.lemma.core.controller.AuthController;
 import com.lemma.core.controller.ErrorHandler;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.repository.Database;
 import com.lemma.core.repository.UserRepository;
+import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
+import com.lemma.core.service.AuthService;
 import com.lemma.core.service.UserService;
 import io.javalin.Javalin;
 import org.hibernate.SessionFactory;
@@ -16,6 +19,7 @@ import org.hibernate.tool.schema.spi.SchemaManagementException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Clock;
 import java.time.Duration;
 
 /**
@@ -54,10 +58,13 @@ public class Main {
         PasswordHasher passwordHasher = new PasswordHasher(PasswordHasher.DEFAULT_COST);
         BlockchainClient blockchainClient = new HttpBlockchainClient(config.blockchainServiceUrl(),
                 config.serviceKey(), Duration.ofSeconds(config.blockchainTimeoutSeconds()));
+        JwtService jwtService = new JwtService(config.jwtSecret(), config.jwtTtlMinutes(), Clock.systemUTC());
         UserService userService = new UserService(userRepository, passwordHasher, blockchainClient);
+        AuthService authService = new AuthService(userRepository, passwordHasher, jwtService);
         UserController userController = new UserController(userService);
+        AuthController authController = new AuthController(authService);
 
-        Javalin app = createApp(userController).start(config.serverPort());
+        Javalin app = createApp(userController, authController).start(config.serverPort());
 
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
@@ -74,7 +81,7 @@ public class Main {
      * Configura o Javalin com JSON, handler de erros e rotas, sem abrir a porta.
      * Usado pelo main e pelo teste HTTP, que assim cobre a mesma configuração.
      */
-    public static Javalin createApp(UserController userController) {
+    public static Javalin createApp(UserController userController, AuthController authController) {
         return Javalin.create(javalin -> {
             javalin.jsonMapper(JsonConfig.jsonMapper());
             // Rota existente com método errado responde 405, não 404.
@@ -82,7 +89,8 @@ public class Main {
             ErrorHandler.register(javalin);
 
             // Públicas (sem token).
-            javalin.routes.post("/users", userController::register); // CT1
+            javalin.routes.post("/users", userController::register);      // CT1
+            javalin.routes.post("/auth/login", authController::login);    // CT3
         });
     }
 
