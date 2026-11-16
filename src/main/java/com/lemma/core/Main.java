@@ -11,9 +11,11 @@ import com.lemma.core.repository.Database;
 import com.lemma.core.repository.UserRepository;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
+import com.lemma.core.security.TokenFilter;
 import com.lemma.core.service.AuthService;
 import com.lemma.core.service.UserService;
 import io.javalin.Javalin;
+import io.javalin.config.JavalinConfig;
 import org.hibernate.SessionFactory;
 import org.hibernate.tool.schema.spi.SchemaManagementException;
 import org.slf4j.Logger;
@@ -21,6 +23,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Set;
 
 /**
  * Ponto de entrada do Core API.
@@ -64,7 +67,7 @@ public class Main {
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
 
-        Javalin app = createApp(userController, authController).start(config.serverPort());
+        Javalin app = createApp(jwtService, userController, authController).start(config.serverPort());
 
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
@@ -78,20 +81,39 @@ public class Main {
     }
 
     /**
-     * Configura o Javalin com JSON, handler de erros e rotas, sem abrir a porta.
-     * Usado pelo main e pelo teste HTTP, que assim cobre a mesma configuração.
+     * Rotas que não exigem token, no formato "MÉTODO /caminho" como foram
+     * registradas. Toda outra rota exige token (TokenFilter): uma rota nova só
+     * fica pública se entrar aqui.
      */
-    public static Javalin createApp(UserController userController, AuthController authController) {
-        return Javalin.create(javalin -> {
-            javalin.jsonMapper(JsonConfig.jsonMapper());
-            // Rota existente com método errado responde 405, não 404.
-            javalin.http.prefer405over404 = true;
-            ErrorHandler.register(javalin);
+    static final Set<String> PUBLIC_ROUTES = Set.of(
+            "POST /users",          // CT1
+            "POST /auth/login");    // CT3
 
-            // Públicas (sem token).
-            javalin.routes.post("/users", userController::register);      // CT1
-            javalin.routes.post("/auth/login", authController::login);    // CT3
-        });
+    /** Cria o Javalin com a configuração de {@link #configure}, sem abrir a porta. */
+    public static Javalin createApp(JwtService jwtService, UserController userController,
+                                    AuthController authController) {
+        return Javalin.create(javalin -> configure(javalin, jwtService, userController, authController));
+    }
+
+    /**
+     * Configura JSON, handler de erros, filtros e rotas. Usado pelo main e pelos
+     * testes HTTP, que assim cobrem a mesma configuração (e podem acrescentar
+     * rotas próprias depois).
+     */
+    public static void configure(JavalinConfig javalin, JwtService jwtService, UserController userController,
+                                 AuthController authController) {
+        javalin.jsonMapper(JsonConfig.jsonMapper());
+        // Rota existente com método errado responde 405, não 404.
+        javalin.http.prefer405over404 = true;
+        ErrorHandler.register(javalin);
+
+        // Token: beforeMatched só roda quando a rota existe, então 404 e 405 ficam como estão.
+        TokenFilter tokenFilter = new TokenFilter(jwtService, PUBLIC_ROUTES);
+        javalin.routes.beforeMatched(tokenFilter::handle);
+
+        // Públicas (estão em PUBLIC_ROUTES).
+        javalin.routes.post("/users", userController::register);      // CT1
+        javalin.routes.post("/auth/login", authController::login);    // CT3
     }
 
     /**

@@ -9,6 +9,7 @@ import com.lemma.core.service.FakeBlockchainClient;
 import com.lemma.core.service.InMemoryUserRepository;
 import com.lemma.core.service.UserService;
 import io.javalin.Javalin;
+import io.javalin.config.JavalinConfig;
 
 import java.io.IOException;
 import java.net.URI;
@@ -18,10 +19,11 @@ import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.function.Consumer;
 
 /**
  * Sobe o Core API numa porta livre com a mesma configuração do Main
- * (Main.createApp), services reais e dependências falsas: repository em memória,
+ * (Main.configure), services reais e dependências falsas: repository em memória,
  * Blockchain Service falso, bcrypt de custo 4, segredo de JWT de teste e relógio
  * fixo. Usado pelos testes HTTP.
  */
@@ -43,9 +45,23 @@ public final class TestApp {
     private Javalin app;
 
     public TestApp start() {
+        return start(javalin -> {
+        });
+    }
+
+    /**
+     * Sobe com a configuração do Main (Main.configure) e, depois dela, as rotas que
+     * só existem no teste (por exemplo, uma rota protegida antes de o C4 existir).
+     */
+    public TestApp start(Consumer<JavalinConfig> extraRoutes) {
         UserService userService = new UserService(repository, hasher, blockchain);
         AuthService authService = new AuthService(repository, hasher, jwtService);
-        app = Main.createApp(new UserController(userService), new AuthController(authService)).start(0);
+        UserController userController = new UserController(userService);
+        AuthController authController = new AuthController(authService);
+        app = Javalin.create(javalin -> {
+            Main.configure(javalin, jwtService, userController, authController);
+            extraRoutes.accept(javalin);
+        }).start(0);
         return this;
     }
 
