@@ -9,12 +9,14 @@ import com.lemma.core.controller.ErrorHandler;
 import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
+import com.lemma.core.controller.WebhookController;
 import com.lemma.core.repository.Database;
 import com.lemma.core.repository.EthTransactionRepository;
 import com.lemma.core.repository.UserRepository;
 import com.lemma.core.security.CorsFilter;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
+import com.lemma.core.security.ServiceKeyFilter;
 import com.lemma.core.security.TokenFilter;
 import com.lemma.core.service.AuthService;
 import com.lemma.core.service.TransactionService;
@@ -30,6 +32,8 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Ponto de entrada do Core API.
@@ -74,13 +78,15 @@ public class Main {
         WalletService walletService = new WalletService(userRepository, blockchainClient);
         TransactionService transactionService = new TransactionService(userRepository, transactionRepository,
                 blockchainClient, Clock.systemUTC());
-        UserController userController = new UserController(userService);
-        AuthController authController = new AuthController(authService);
-        WalletController walletController = new WalletController(walletService);
-        TransactionController transactionController = new TransactionController(transactionService);
+        Controllers controllers = new Controllers(
+                new UserController(userService),
+                new AuthController(authService),
+                new WalletController(walletService),
+                new TransactionController(transactionService),
+                new WebhookController(transactionService));
 
-        Javalin app = createApp(config.corsAllowedOrigin(), jwtService, userController, authController,
-                walletController, transactionController).start(config.serverPort());
+        Javalin app = createApp(config.corsAllowedOrigin(), jwtService, config.serviceKey(), controllers)
+                .start(config.serverPort());
 
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
@@ -93,22 +99,36 @@ public class Main {
         log.info("Core API no ar na porta {} com {}", config.serverPort(), config);
     }
 
+    /** Os controllers montados, para não passar um parâmetro por controller. */
+    public record Controllers(UserController user, AuthController auth, WalletController wallet,
+                              TransactionController transaction, WebhookController webhook) {
+    }
+
     /**
-     * Rotas que não exigem token, no formato "MÉTODO /caminho" como foram
-     * registradas. Toda outra rota exige token (TokenFilter): uma rota nova só
-     * fica pública se entrar aqui.
+     * Rotas sem nenhuma credencial (premissa P1), no formato "MÉTODO /caminho"
+     * como foram registradas. Só o cadastro e o login; o MainRoutesTest fixa a lista.
      */
-    static final Set<String> PUBLIC_ROUTES = Set.of(
+    static final Set<String> OPEN_ROUTES = Set.of(
             "POST /users",          // CT1
             "POST /auth/login");    // CT3
 
+    /** Rotas entre serviços: sem token, com X-Service-Key (ServiceKeyFilter). */
+    static final Set<String> SERVICE_KEY_ROUTES = Set.of(
+            "POST /webhooks/tasks"); // CT15
+
+    /**
+     * Rotas que o TokenFilter dispensa: a união das duas listas acima, calculada e
+     * não digitada. Uma rota só fica sem token se estiver aberta de propósito
+     * (OPEN_ROUTES) ou exigir a chave de serviço (SERVICE_KEY_ROUTES). Toda outra
+     * exige token: uma rota nova esquecida fica protegida, nunca aberta.
+     */
+    static final Set<String> PUBLIC_ROUTES = Stream.concat(OPEN_ROUTES.stream(), SERVICE_KEY_ROUTES.stream())
+            .collect(Collectors.toUnmodifiableSet());
+
     /** Cria o Javalin com a configuração de {@link #configure}, sem abrir a porta. */
-    public static Javalin createApp(String corsAllowedOrigin, JwtService jwtService,
-                                    UserController userController, AuthController authController,
-                                    WalletController walletController,
-                                    TransactionController transactionController) {
-        return Javalin.create(javalin -> configure(javalin, corsAllowedOrigin, jwtService,
-                userController, authController, walletController, transactionController));
+    public static Javalin createApp(String corsAllowedOrigin, JwtService jwtService, String serviceKey,
+                                    Controllers controllers) {
+        return Javalin.create(javalin -> configure(javalin, corsAllowedOrigin, jwtService, serviceKey, controllers));
     }
 
     /**
@@ -117,12 +137,10 @@ public class Main {
      * rotas próprias depois).
      *
      * O Javalin roda as fases nesta ordem, qualquer que seja a ordem de registro:
-     * before (CORS) → beforeMatched (token) → rota (ou 404/405) → after.
+     * before (CORS) → beforeMatched (token, chave de serviço) → rota (ou 404/405) → after.
      */
     public static void configure(JavalinConfig javalin, String corsAllowedOrigin, JwtService jwtService,
-                                 UserController userController, AuthController authController,
-                                 WalletController walletController,
-                                 TransactionController transactionController) {
+                                 String serviceKey, Controllers controllers) {
         javalin.jsonMapper(JsonConfig.jsonMapper());
         // Rota existente com método errado responde 405, não 404.
         javalin.http.prefer405over404 = true;
@@ -137,13 +155,21 @@ public class Main {
         TokenFilter tokenFilter = new TokenFilter(jwtService, PUBLIC_ROUTES);
         javalin.routes.beforeMatched(tokenFilter::handle);
 
-        // Públicas (estão em PUBLIC_ROUTES).
-        javalin.routes.post("/users", userController::register);      // CT1
-        javalin.routes.post("/auth/login", authController::login);    // CT3
+        // Chave de serviço: só nas rotas de SERVICE_KEY_ROUTES (o TokenFilter as dispensa).
+        ServiceKeyFilter serviceKeyFilter = new ServiceKeyFilter(serviceKey, SERVICE_KEY_ROUTES);
+        javalin.routes.beforeMatched(serviceKeyFilter::handle);
+
+        // Abertas (estão em OPEN_ROUTES).
+        javalin.routes.post("/users", controllers.user()::register);      // CT1
+        javalin.routes.post("/auth/login", controllers.auth()::login);    // CT3
 
         // Com token (fora de PUBLIC_ROUTES).
-        javalin.routes.get("/wallet/balance", walletController::balance);    // CT6
-        javalin.routes.post("/transactions", transactionController::send);   // CT9
+        javalin.routes.get("/wallet/balance", controllers.wallet()::balance);              // CT6
+        javalin.routes.post("/transactions", controllers.transaction()::send);             // CT9
+        javalin.routes.get("/transactions/{taskId}", controllers.transaction()::get);      // CT13
+
+        // Entre serviços, com chave de serviço (estão em SERVICE_KEY_ROUTES).
+        javalin.routes.post("/webhooks/tasks", controllers.webhook()::notifyTaskCompleted); // CT15
     }
 
     /**

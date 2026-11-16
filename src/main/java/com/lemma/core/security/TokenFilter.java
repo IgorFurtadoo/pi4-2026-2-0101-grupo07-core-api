@@ -10,8 +10,9 @@ import java.util.Set;
  * Exige o token JWT nas rotas do Frontend (premissa P1, seção 6 do desenho).
  *
  * Proteção por padrão: toda rota exige "Authorization: Bearer <token>", menos as
- * da lista de rotas públicas (Main.PUBLIC_ROUTES). Uma rota nova esquecida fica
- * protegida, nunca aberta.
+ * da lista de rotas públicas (Main.PUBLIC_ROUTES: as abertas, cadastro e login, e
+ * as entre serviços, que exigem a chave de serviço no ServiceKeyFilter). Uma rota
+ * nova esquecida fica protegida, nunca aberta.
  *
  * Registrado no Main com beforeMatched: o Javalin só o executa quando existe rota
  * para o caminho e o método. Rota inexistente continua 404 e método errado

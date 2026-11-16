@@ -49,3 +49,9 @@ Campos devolvidos na leitura de uma transação.
 | Gravar com `task_id` já existente | Violação de unicidade da chave. O Core API responde HTTP 500, `code` INTERNAL_ERROR |
 | Ler ou atualizar um `task_id` inexistente | Nenhum registro. Em CT13 e CT15 vira HTTP 404, `code` TRANSACTION_NOT_FOUND |
 | Banco do Core API indisponível | Falha de conexão. O Core API responde HTTP 500, `code` INTERNAL_ERROR |
+
+Nota (emenda do H08.2, decidida pelo responsável do módulo (Igor)):
+- **Atualização só enquanto `PENDING`:** o webhook (CT15) e a consulta ativa (CT14, dentro do CT13) atualizam a linha pela mesma atualização condicional no banco (`UPDATE ... WHERE task_id = ? AND status = 'PENDING'`), sem leitura prévia. Estado final (`CONFIRMED` ou `FAILED`) nunca regride nem muda, e os dois caminhos nunca disputam a mesma linha.
+- **Hash provisório:** `transaction_hash` guarda o que o Blockchain Service informou. Ele pode aparecer com a transação ainda `PENDING` e sumir se a rede recusar o envio (a transação termina `FAILED` com `failure_reason` REJECTED_BY_NETWORK e sem `transaction_hash`). Com `CONFIRMED`, o hash está sempre presente.
+- **`updated_at`:** é o relógio do Core API no momento em que ele aplica a mudança, não a data informada pelo Blockchain Service. Consultas sem novidade não gravam nada, e `updated_at` não muda.
+- **Leitura:** a leitura do Frontend (CT13) é sempre por `task_id` e `user_id` juntos. O webhook (CT15), que vem do Blockchain Service, lê só por `task_id`.

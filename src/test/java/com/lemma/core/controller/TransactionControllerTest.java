@@ -1,7 +1,10 @@
 package com.lemma.core.controller;
 
 import com.lemma.core.TestApp;
+import com.lemma.core.client.TaskState;
 import com.lemma.core.model.EthTransaction;
+import com.lemma.core.model.FailureReason;
+import com.lemma.core.model.TransactionStatus;
 import com.lemma.core.model.User;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.service.FakeBlockchainClient;
@@ -14,6 +17,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 
@@ -22,8 +26,9 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * POST /transactions por HTTP real, com a mesma configuração do Main (TestApp):
- * a rota real, protegida pelo TokenFilter sem estar em PUBLIC_ROUTES. O usuário 1
+ * POST /transactions e GET /transactions/{taskId} por HTTP real, com a mesma
+ * configuração do Main (TestApp): as rotas reais, protegidas pelo TokenFilter sem
+ * estar em PUBLIC_ROUTES. O usuário 1
  * (ana) está gravado; o Blockchain Service e os repositórios são os falsos.
  */
 class TransactionControllerTest {
@@ -329,6 +334,172 @@ class TransactionControllerTest {
         assertEquals(401, unauthorized.statusCode());
         assertEquals(502, badGateway.statusCode());
         for (HttpResponse<String> response : List.of(accepted, badRequest, unauthorized, badGateway)) {
+            assertEquals(TestApp.CORS_ORIGIN,
+                    response.headers().firstValue("Access-Control-Allow-Origin").orElse(""));
+        }
+    }
+
+    // ==================== GET /transactions/{taskId} (CT13) ====================
+
+    private static final String TRACKED = "a3f1c2d4-5b6e-4f70-8a91-0c2d3e4f5a6b";
+    private static final String HASH = "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060";
+    private static final Instant CREATED = TestApp.NOW.minusSeconds(60);
+    private static final String NOT_FOUND =
+            "{\"code\":\"TRANSACTION_NOT_FOUND\",\"message\":\"Transação não encontrada.\"}";
+
+    /** Linha PENDING de ana, com o valor na escala 18, como o banco devolve. */
+    private void saveTracked() {
+        app.transactions.save(new EthTransaction(TRACKED, 1, DESTINATION,
+                new BigDecimal("0.01").setScale(18), CREATED));
+    }
+
+    private HttpResponse<String> get(String taskId, String authorization, String origin) throws Exception {
+        HttpRequest.Builder request = app.request("/transactions/" + taskId).GET();
+        if (authorization != null) {
+            request.header("Authorization", authorization);
+        }
+        if (origin != null) {
+            request.header("Origin", origin);
+        }
+        return app.send(request.build());
+    }
+
+    private HttpResponse<String> get(String taskId) throws Exception {
+        return get(taskId, bearer(1), null);
+    }
+
+    @Test
+    void getReturns200WithExactBodyAndOptionalFieldsAbsent() throws Exception {
+        saveTracked();
+        app.blockchain.failGetTask = true;
+
+        HttpResponse<String> response = get(TRACKED);
+
+        assertEquals(200, response.statusCode());
+        assertEquals("{\"taskId\":\"" + TRACKED + "\",\"status\":\"PENDING\",\"destinationAddress\":\""
+                + DESTINATION + "\",\"amountEth\":0.01,\"updatedAt\":\"2026-10-20T14:29:00Z\"}", response.body());
+        assertTrue(response.headers().firstValue("Content-Type").orElse("").startsWith("application/json"));
+    }
+
+    @Test
+    void getAppliesTheCt14StateAndReturnsTheSavedRow() throws Exception {
+        saveTracked();
+        app.blockchain.tasks.put(TRACKED, new TaskState(
+                TransactionStatus.CONFIRMED, HASH, null));
+
+        HttpResponse<String> response = get(TRACKED);
+
+        assertEquals(200, response.statusCode());
+        assertEquals("{\"taskId\":\"" + TRACKED + "\",\"status\":\"CONFIRMED\",\"destinationAddress\":\""
+                + DESTINATION + "\",\"amountEth\":0.01,\"transactionHash\":\"" + HASH
+                + "\",\"updatedAt\":\"2026-10-20T14:30:00Z\"}", response.body());
+        assertEquals(TransactionStatus.CONFIRMED, app.transactions.row(TRACKED).getStatus());
+    }
+
+    @Test
+    void getOfAFailedTransactionHasTheReasonAndNoHash() throws Exception {
+        saveTracked();
+        app.transactions.setState(TRACKED, TransactionStatus.FAILED, null,
+                FailureReason.INTERNAL_ERROR, CREATED);
+
+        HttpResponse<String> response = get(TRACKED);
+
+        assertEquals("{\"taskId\":\"" + TRACKED + "\",\"status\":\"FAILED\",\"destinationAddress\":\""
+                + DESTINATION + "\",\"amountEth\":0.01,\"failureReason\":\"INTERNAL_ERROR\","
+                + "\"updatedAt\":\"2026-10-20T14:29:00Z\"}", response.body());
+        assertTrue(app.blockchain.taskQueries.isEmpty());
+    }
+
+    @Test
+    void getOfOtherUserUnknownOrMalformedIsTheSame404() throws Exception {
+        saveTracked();
+        app.repository.save(new User("bia@example.com", "hash-falso", FakeBlockchainClient.address(2), TestApp.NOW));
+
+        List<HttpResponse<String>> responses = List.of(
+                get(TRACKED, bearer(2), null),
+                get("b4e2d3c5-6c7f-4a81-9ba2-1d3e4f5a6b7c"),
+                get("abc"),
+                get(TRACKED + "0"));
+
+        for (HttpResponse<String> response : responses) {
+            assertEquals(404, response.statusCode(), response.uri().toString());
+            assertEquals(NOT_FOUND, response.body(), response.uri().toString());
+        }
+        assertTrue(app.blockchain.taskQueries.isEmpty());
+    }
+
+    @Test
+    void getWithUppercaseTaskIdFindsTheOwnRow() throws Exception {
+        saveTracked();
+        app.blockchain.failGetTask = true;
+
+        HttpResponse<String> response = get(TRACKED.toUpperCase());
+
+        assertEquals(200, response.statusCode());
+        assertTrue(response.body().startsWith("{\"taskId\":\"" + TRACKED + "\""), response.body());
+    }
+
+    @Test
+    void getWithTokenOfAUserWithoutTransactionsIs404() throws Exception {
+        saveTracked();
+
+        HttpResponse<String> response = get(TRACKED, bearer(99), null);
+
+        assertEquals(404, response.statusCode());
+        assertEquals(NOT_FOUND, response.body());
+    }
+
+    @Test
+    void getWithoutTokenWrongSchemeGarbageOrExpiredIs401() throws Exception {
+        saveTracked();
+        JwtService earlier = new JwtService(TestApp.JWT_SECRET, TestApp.JWT_TTL_MINUTES,
+                Clock.fixed(TestApp.NOW.minus(Duration.ofHours(5)), ZoneOffset.UTC));
+
+        for (String authorization : new String[] {null, "Basic " + app.jwtService.issue(1).token(), "Bearer lixo",
+                "Bearer " + earlier.issue(1).token()}) {
+            HttpResponse<String> response = get(TRACKED, authorization, null);
+
+            assertEquals(401, response.statusCode(), authorization);
+            assertEquals(TOKEN_INVALID, response.body(), authorization);
+        }
+        assertTrue(app.blockchain.taskQueries.isEmpty());
+    }
+
+    @Test
+    void serviceKeyDoesNotOpenTheGet() throws Exception {
+        saveTracked();
+
+        HttpResponse<String> response = app.send(app.request("/transactions/" + TRACKED)
+                .header("X-Service-Key", TestApp.SERVICE_KEY).GET().build());
+
+        assertEquals(401, response.statusCode());
+        assertEquals(TOKEN_INVALID, response.body());
+    }
+
+    @Test
+    void getDatabaseFailureIs500() throws Exception {
+        saveTracked();
+        app.transactions.failOnFind = new IllegalStateException("detalhe-do-banco");
+
+        HttpResponse<String> response = get(TRACKED);
+
+        assertEquals(500, response.statusCode());
+        assertEquals("{\"code\":\"INTERNAL_ERROR\",\"message\":\"Erro interno.\"}", response.body());
+    }
+
+    @Test
+    void allowedOriginGetsTheCorsHeaderOnGet200On404AndOn401() throws Exception {
+        saveTracked();
+        app.blockchain.failGetTask = true;
+
+        HttpResponse<String> ok = get(TRACKED, bearer(1), TestApp.CORS_ORIGIN);
+        HttpResponse<String> notFound = get("abc", bearer(1), TestApp.CORS_ORIGIN);
+        HttpResponse<String> unauthorized = get(TRACKED, null, TestApp.CORS_ORIGIN);
+
+        assertEquals(200, ok.statusCode());
+        assertEquals(404, notFound.statusCode());
+        assertEquals(401, unauthorized.statusCode());
+        for (HttpResponse<String> response : List.of(ok, notFound, unauthorized)) {
             assertEquals(TestApp.CORS_ORIGIN,
                     response.headers().firstValue("Access-Control-Allow-Origin").orElse(""));
         }

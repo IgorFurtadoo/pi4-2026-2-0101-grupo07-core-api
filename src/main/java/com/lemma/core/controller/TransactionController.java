@@ -7,9 +7,9 @@ import com.lemma.core.service.TransactionService;
 import io.javalin.http.Context;
 
 /**
- * Rota de envio, protegida pelo TokenFilter. Sem regra de negócio: lê o id do
- * usuário do token e o corpo, chama o service e devolve o DTO. O Frontend não
- * informa a origem. Corpo ausente, malformado ou com tipo errado vira 400
+ * Rotas de envio e de acompanhamento, protegidas pelo TokenFilter. Sem regra de
+ * negócio: lê o id do usuário do token e o corpo ou o caminho, chama o service e
+ * devolve o DTO. O Frontend não informa a origem. Corpo ausente, malformado ou com tipo errado vira 400
  * REQUEST_INVALID no ErrorHandler; o corpo literal null é tratado aqui.
  */
 public class TransactionController {
@@ -28,5 +28,10 @@ public class TransactionController {
         }
         SendTransactionRequest request = ctx.bodyAsClass(SendTransactionRequest.class);
         ctx.status(202).json(transactionService.send(TokenFilter.userId(ctx), request));
+    }
+
+    /** CT13: GET /transactions/{taskId} → 200 { taskId, status, destinationAddress, amountEth, ... }. */
+    public void get(Context ctx) {
+        ctx.json(transactionService.get(TokenFilter.userId(ctx), ctx.pathParam("taskId")));
     }
 }

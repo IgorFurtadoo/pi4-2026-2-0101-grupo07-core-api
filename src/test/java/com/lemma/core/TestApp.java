@@ -4,6 +4,7 @@ import com.lemma.core.controller.AuthController;
 import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
+import com.lemma.core.controller.WebhookController;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.service.AuthService;
@@ -29,8 +30,8 @@ import java.util.function.Consumer;
 /**
  * Sobe o Core API numa porta livre com a mesma configuração do Main
  * (Main.configure), services reais e dependências falsas: repositories em memória,
- * Blockchain Service falso, bcrypt de custo 4, segredo de JWT de teste e relógio
- * fixo. Usado pelos testes HTTP.
+ * Blockchain Service falso, bcrypt de custo 4, segredo de JWT e chave de serviço
+ * de teste e relógio fixo. Usado pelos testes HTTP.
  */
 public final class TestApp {
 
@@ -41,6 +42,8 @@ public final class TestApp {
     public static final Instant NOW = Instant.parse("2026-10-20T14:30:00Z");
     /** Origem do Frontend permitida pelo CORS (o valor do .env.example). */
     public static final String CORS_ORIGIN = "http://localhost:5173";
+    /** Chave de serviço obviamente falsa, só para os testes. */
+    public static final String SERVICE_KEY = "chave-de-servico-de-teste-falsa";
 
     private static final HttpClient http = HttpClient.newHttpClient();
 
@@ -67,13 +70,14 @@ public final class TestApp {
         AuthService authService = new AuthService(repository, hasher, jwtService);
         WalletService walletService = new WalletService(repository, blockchain);
         TransactionService transactionService = new TransactionService(repository, transactions, blockchain, clock);
-        UserController userController = new UserController(userService);
-        AuthController authController = new AuthController(authService);
-        WalletController walletController = new WalletController(walletService);
-        TransactionController transactionController = new TransactionController(transactionService);
+        Main.Controllers controllers = new Main.Controllers(
+                new UserController(userService),
+                new AuthController(authService),
+                new WalletController(walletService),
+                new TransactionController(transactionService),
+                new WebhookController(transactionService));
         app = Javalin.create(javalin -> {
-            Main.configure(javalin, CORS_ORIGIN, jwtService, userController, authController, walletController,
-                    transactionController);
+            Main.configure(javalin, CORS_ORIGIN, jwtService, SERVICE_KEY, controllers);
             extraRoutes.accept(javalin);
         }).start(0);
         return this;

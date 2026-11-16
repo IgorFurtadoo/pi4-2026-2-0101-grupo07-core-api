@@ -33,3 +33,19 @@ Saída: não tem (resposta `204`, sem corpo).
 | Corpo com campo obrigatório ausente ou `status` fora dos valores aceitos | HTTP 400, `code` REQUEST_INVALID |
 | `taskId` não existe em CT12 `eth_transaction` (por exemplo, a notificação chegou antes de o Core API gravar a transação) | HTTP 404, `code` TRANSACTION_NOT_FOUND. O Core API recupera o estado depois por CT14 `getTask` |
 | Falha inesperada, incluindo Banco do Core API indisponível | HTTP 500, `code` INTERNAL_ERROR |
+
+Nota (emenda do H08.1, decidida pelo responsável do módulo (Igor)): o Blockchain Service envia esta notificação em **toda** transição de uma task para estado final: `CONFIRMED`, `FAILED`/TRANSACTION_REVERTED, `FAILED`/REJECTED_BY_NETWORK e `FAILED`/INTERNAL_ERROR, inclusive quando a transação nunca chegou a ser enviada (sem `transactionHash`). O envio acontece depois de gravar o estado final em CT11, com a mesma `X-Service-Key` (P2) usada nas chamadas da Core API ao Blockchain Service, e o corpo tem os mesmos campos do CT14. Não há retentativa (P4 em aberto): qualquer resposta fora de 2xx, tempo esgotado (5 s) ou falha de conexão só vai ao log, e a Core API recupera o estado por CT14 `getTask`. 404 TRANSACTION_NOT_FOUND é a corrida conhecida da seção 7.5 do desenho do Blockchain Service.
+
+Nota (emenda do H08.2, decidida pelo responsável do módulo (Igor)), regras do Core API como receptor:
+- **Validação do corpo:** qualquer falha abaixo responde HTTP 400, `code` REQUEST_INVALID, com mensagem fixa (o corpo nunca é repetido na resposta). A chave de serviço é conferida antes do corpo.
+  - corpo ausente, vazio, `null`, JSON malformado, raiz que não é objeto ou campo com tipo errado (todos os campos são texto JSON);
+  - `taskId` ausente ou fora do formato de UUID (36 caracteres, hexadecimais e hífens; comparado sem diferença de maiúsculas e minúsculas);
+  - `status` ausente ou diferente de `CONFIRMED` e `FAILED`, exatamente assim (`PENDING` e minúsculas são inválidos);
+  - `updatedAt` ausente ou que não seja um instante ISO 8601;
+  - `transactionHash` presente fora do formato `0x` e 64 hexadecimais;
+  - `failureReason` presente fora dos três valores, ou ausente com `FAILED`;
+  - `CONFIRMED` sem `transactionHash` (a transação confirmada sempre tem hash).
+  Campos extras são ignorados. `FAILED` sem `transactionHash` é aceito. Com `CONFIRMED`, um `failureReason` válido é ignorado (não é gravado).
+- **`updatedAt`:** só é validado. O `updated_at` gravado em CT12 é o relógio do Core API no momento da mudança.
+- **Task desconhecida:** HTTP 404, `code` TRANSACTION_NOT_FOUND, sem efeito.
+- **Reenvio e contradição:** para task conhecida, a resposta é sempre `204`, tenha alterado algo ou não. A atualização só acontece se a transação ainda estiver `PENDING` (CT12): reenviar a mesma notificação não muda nada, e uma notificação que contradiz o estado final já gravado (por exemplo `FAILED` sobre `CONFIRMED`) é ignorada e registrada em log como aviso.
