@@ -344,6 +344,23 @@ Rotas inexistentes: 404 e 405 com o corpo padrão do Javalin, como no Blockchain
 5. **Contra o MySQL de verdade (roteiro `scripts/`):** a atualização condicional da seção 8.4 e a restrição de unicidade só se provam no banco real; o repository em memória dos testes **não** prova isso. Entra no roteiro do passo C9.
 6. **Roteiro manual ponta a ponta** (`scripts/e2e-demo.sh`, passo C9): cadastrar, entrar, saldo, enviar da carteira abastecida, acompanhar até `CONFIRMED` com o Blockchain Service real. O webhook do Blockchain Service **nunca foi testado contra um receptor real**: este roteiro é a primeira vez.
 
+### 11.1 Carteira abastecida e saldo real (C9, H04.4)
+
+Abastecimento pela carteira de demonstração, decidido pelo responsável do módulo (Igor): o usuário de teste recebe ETH por um CT10 chamado direto no Blockchain Service, com origem na carteira de demonstração (uma carteira custodial dele, já abastecida) e destino no endereço do usuário. A Especificação fala em abastecer pela torneira; a torneira PoW abastece só a carteira de demonstração, e ela abastece os usuários de teste. Assim, cada execução do roteiro não depende da torneira, e o valor por usuário é pequeno e fixo (`FUND_ETH`, padrão 0.003, no máximo 0.005).
+
+Resultado de 16/11/2026 (`scripts/e2e-demo.sh`, passos 1, 2, 4, 6 e 8; usuário `userId` 23, carteira `0x132e8DDA8F2333112674EAD5eD530B44C7AF759A`):
+
+| Momento | `GET /wallet/balance` (CT6) | CT7 direto no Blockchain Service |
+|---|---|---|
+| Carteira nova | `"balanceEth":0` | `0` |
+| Depois do abastecimento de 0.003 ([tx `0x3154…3990`](https://sepolia.etherscan.io/tx/0x315459d4ae5cde2622940bb00b42c958f06e671334da833c093fa16ba6f13990)) | `"balanceEth":0.003` | `0.003` |
+| Depois do envio 1 (0.0005 + gás) | `"balanceEth":0.002499999999601` | `0.002499999999601` |
+| Depois do envio 2 | `"balanceEth":0.001999999999202` | `0.001999999999202` |
+
+O `balanceEth` sai como número JSON em notação plana, com o valor exato do CT7 (15 casas no exemplo acima, sem arredondar nem expoente). A pendência do H04.2 (saldo diferente de zero) está fechada.
+
+Para enviar, a carteira precisa de **valor + 500.000 × preço do gás** adiantados, porque o Blockchain Service assina toda transação com limite de gás fixo de 500.000 (seção 11.2, "Limites"). Por isso o abastecimento padrão é 0.003 ETH para dois envios de 0.0005.
+
 ## 12. Divergências e decisões
 
 ### Mudanças que tocam contratos já escritos
@@ -364,6 +381,7 @@ Rotas inexistentes: 404 e 405 com o corpo padrão do Javalin, como no Blockchain
 2. **CT18 e E6:** o passo 3 do E6 e o diagrama chamam `GET /market/{assetId}`; a ficha do CT18 diz `GET /market-data/{assetId}`. O desenho segue a ficha. Corrigir o texto do E6.
 3. **P5:** o limite de 30 chamadas por minuto da CoinGecko não bate com a documentação atual (100 por minuto no plano Demo, mais a cota de 10.000 créditos por mês). O limite do Core API é configuração e parte do mais conservador; atualizar o texto da P5.
 4. **P1:** passa a valer "todas as rotas do Frontend exigem token, exceto cadastro e login"; o webhook usa `X-Service-Key`.
+5. **Abastecimento da carteira do usuário (C9, H04.4):** a Especificação fala em abastecer na torneira; o roteiro abastece cada usuário de teste pela carteira de demonstração do Blockchain Service (CT10 direto), e só a carteira de demonstração é abastecida na torneira PoW. Decidida pelo responsável do módulo (Igor) em 16/11/2026 (seção 11.1).
 
 ### Decisões confirmadas pelo Igor em 15/11/2026 [Decidido]
 
