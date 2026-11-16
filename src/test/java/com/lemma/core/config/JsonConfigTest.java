@@ -4,13 +4,15 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JacksonException;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Prova a leitura do corpo: campo de texto só aceita texto JSON, campo ausente
- * fica nulo e campo extra é ignorado.
+ * Prova a leitura do corpo (campo de texto só aceita texto JSON, campo ausente
+ * fica nulo e campo extra é ignorado) e a escrita de BigDecimal em notação plana.
  */
 class JsonConfigTest {
 
@@ -66,5 +68,34 @@ class JsonConfigTest {
 
         assertNull(body.email());
         assertNull(body.password());
+    }
+
+    // ---------- saída: BigDecimal em notação plana ----------
+
+    /** Corpo de saída com um decimal, como o do CT6. */
+    record DecimalBody(BigDecimal balanceEth) {
+    }
+
+    private static String write(String decimal) {
+        return JsonConfig.jsonMapper().toJsonString(new DecimalBody(new BigDecimal(decimal)), DecimalBody.class);
+    }
+
+    @Test
+    void oneWeiIsWrittenPlainNeverWithExponent() {
+        assertEquals("{\"balanceEth\":0.000000000000000001}", write("1E-18"));
+        assertEquals("{\"balanceEth\":0.000000000000000001}", write("0.000000000000000001"));
+    }
+
+    @Test
+    void zeroAndCommonValuesAreWrittenAsTheyAre() {
+        assertEquals("{\"balanceEth\":0}", write("0"));
+        assertEquals("{\"balanceEth\":0.25}", write("0.25"));
+        assertEquals("{\"balanceEth\":0.000000000000000000}", write("0E-18"));
+        assertEquals("{\"balanceEth\":123456789.123456789012345678}", write("123456789.123456789012345678"));
+    }
+
+    @Test
+    void largeValueWithPositiveExponentIsWrittenPlain() {
+        assertEquals("{\"balanceEth\":100}", write("1E+2"));
     }
 }
