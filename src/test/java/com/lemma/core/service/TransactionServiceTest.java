@@ -4,6 +4,7 @@ import com.lemma.core.LogCapture;
 import com.lemma.core.client.TaskState;
 import com.lemma.core.dto.SendTransactionRequest;
 import com.lemma.core.dto.SendTransactionResponse;
+import com.lemma.core.dto.TaskCompletedRequest;
 import com.lemma.core.dto.TransactionResponse;
 import com.lemma.core.exception.ApiException;
 import com.lemma.core.model.EthTransaction;
@@ -575,5 +576,282 @@ class TransactionServiceTest {
 
         assertNull(response.transactionHash());
         assertNull(response.failureReason());
+    }
+
+    // ==================== CT15 notifyTaskCompleted ====================
+
+    private static final String WEBHOOK_UPDATED_AT = "2026-10-20T14:36:10Z";
+
+    private static TaskCompletedRequest notification(String status, String hash, String reason) {
+        return new TaskCompletedRequest(TASK, status, hash, reason, WEBHOOK_UPDATED_AT);
+    }
+
+    private ApiException assertNotificationRefused(TaskCompletedRequest request, int status, String code,
+                                                   String message) {
+        ApiException e = assertThrows(ApiException.class, () -> service.notifyTaskCompleted(request),
+                String.valueOf(request));
+        assertEquals(status, e.getStatus(), String.valueOf(request));
+        assertEquals(code, e.getCode(), String.valueOf(request));
+        assertEquals(message, e.getMessage(), String.valueOf(request));
+        return e;
+    }
+
+    /** 400 REQUEST_INVALID sem ler o banco, sem gravar e sem log. */
+    private void assertNotificationInvalid(TaskCompletedRequest request) {
+        transactions.failOnFind = new IllegalStateException("o banco não devia ser lido");
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertNotificationRefused(request, 400, "REQUEST_INVALID", "Corpo da requisição inválido.");
+            assertEquals(0, logs.lines().size(), String.valueOf(request));
+        }
+        transactions.failOnFind = null;
+        assertEquals(0, transactions.findCalls, String.valueOf(request));
+        assertEquals(0, transactions.updateCalls, String.valueOf(request));
+    }
+
+    // ---------- aplica ----------
+
+    @Test
+    void confirmedWithHashIsSavedWithoutLog() {
+        saveRow();
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            service.notifyTaskCompleted(notification("CONFIRMED", HASH, null));
+            assertEquals(0, logs.lines().size());
+        }
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.CONFIRMED, row.getStatus());
+        assertEquals(HASH, row.getTransactionHash());
+        assertNull(row.getFailureReason());
+        // O updated_at é o relógio do Core API, não o updatedAt da notificação.
+        assertEquals(NOW_MILLIS, row.getUpdatedAt());
+        assertTrue(blockchain.taskQueries.isEmpty());
+    }
+
+    @Test
+    void failedWithoutHashAndWithReasonIsSaved() {
+        saveRow();
+
+        service.notifyTaskCompleted(notification("FAILED", null, "REJECTED_BY_NETWORK"));
+
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.FAILED, row.getStatus());
+        assertNull(row.getTransactionHash());
+        assertEquals(FailureReason.REJECTED_BY_NETWORK, row.getFailureReason());
+    }
+
+    @Test
+    void failedWithHashAndReasonIsSaved() {
+        saveRow();
+
+        service.notifyTaskCompleted(notification("FAILED", HASH, "TRANSACTION_REVERTED"));
+
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.FAILED, row.getStatus());
+        assertEquals(HASH, row.getTransactionHash());
+        assertEquals(FailureReason.TRANSACTION_REVERTED, row.getFailureReason());
+    }
+
+    @Test
+    void confirmedWithAValidReasonSavesNoReason() {
+        saveRow();
+
+        service.notifyTaskCompleted(notification("CONFIRMED", HASH, "INTERNAL_ERROR"));
+
+        assertEquals(TransactionStatus.CONFIRMED, transactions.row(TASK).getStatus());
+        assertNull(transactions.row(TASK).getFailureReason());
+    }
+
+    @Test
+    void uppercaseTaskIdFindsTheRow() {
+        saveRow();
+
+        service.notifyTaskCompleted(new TaskCompletedRequest(TASK.toUpperCase(), "CONFIRMED", HASH, null,
+                WEBHOOK_UPDATED_AT));
+
+        assertEquals(TransactionStatus.CONFIRMED, transactions.row(TASK).getStatus());
+    }
+
+    @Test
+    void updatedAtWithFractionOrOffsetIsAccepted() {
+        saveRow();
+
+        service.notifyTaskCompleted(new TaskCompletedRequest(TASK, "CONFIRMED", HASH, null,
+                "2026-10-20T11:36:10.123-03:00"));
+
+        assertEquals(NOW_MILLIS, transactions.row(TASK).getUpdatedAt());
+    }
+
+    // ---------- reenvio e contradição ----------
+
+    @Test
+    void sameNotificationAgainChangesNothingAndLogsNothing() {
+        saveRow();
+        service.notifyTaskCompleted(notification("FAILED", null, "REJECTED_BY_NETWORK"));
+        transactions.setState(TASK, TransactionStatus.FAILED, null, FailureReason.REJECTED_BY_NETWORK, CREATED);
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            service.notifyTaskCompleted(notification("FAILED", null, "REJECTED_BY_NETWORK"));
+            assertEquals(0, logs.lines().size());
+        }
+        assertEquals(CREATED, transactions.row(TASK).getUpdatedAt());
+        assertEquals(2, transactions.updateCalls);
+    }
+
+    @Test
+    void sameStateAlreadySavedByCt14LogsNothing() {
+        saveRow();
+        transactions.setState(TASK, TransactionStatus.CONFIRMED, HASH, null, CREATED);
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            // Um motivo válido com CONFIRMED é ignorado: continua sendo a mesma notificação.
+            service.notifyTaskCompleted(notification("CONFIRMED", HASH, "INTERNAL_ERROR"));
+            assertEquals(0, logs.lines().size());
+        }
+    }
+
+    @Test
+    void failedOverConfirmedChangesNothingAndLogsAWarning() {
+        saveRow();
+        transactions.setState(TASK, TransactionStatus.CONFIRMED, HASH, null, CREATED);
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            service.notifyTaskCompleted(notification("FAILED", HASH, "TRANSACTION_REVERTED"));
+
+            assertEquals("WARN Task " + TASK + ": notificação contradiz o estado final"
+                    + " (CONFIRMED gravado, FAILED notificado)", logs.all());
+            assertFalse(logs.all().contains(HASH.substring(2)));
+        }
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.CONFIRMED, row.getStatus());
+        assertNull(row.getFailureReason());
+        assertEquals(CREATED, row.getUpdatedAt());
+    }
+
+    @Test
+    void confirmedOverFailedChangesNothingAndLogsAWarning() {
+        saveRow();
+        transactions.setState(TASK, TransactionStatus.FAILED, null, FailureReason.REJECTED_BY_NETWORK, CREATED);
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            service.notifyTaskCompleted(notification("CONFIRMED", HASH, null));
+
+            assertEquals("WARN Task " + TASK + ": notificação contradiz o estado final"
+                    + " (FAILED gravado, CONFIRMED notificado)", logs.all());
+        }
+        assertEquals(TransactionStatus.FAILED, transactions.row(TASK).getStatus());
+        assertNull(transactions.row(TASK).getTransactionHash());
+        assertEquals(CREATED, transactions.row(TASK).getUpdatedAt());
+    }
+
+    @Test
+    void sameStatusWithAnotherReasonIsAContradiction() {
+        saveRow();
+        transactions.setState(TASK, TransactionStatus.FAILED, null, FailureReason.REJECTED_BY_NETWORK, CREATED);
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            service.notifyTaskCompleted(notification("FAILED", null, "INTERNAL_ERROR"));
+
+            assertEquals("WARN Task " + TASK + ": notificação contradiz o estado final"
+                    + " (FAILED gravado, FAILED notificado)", logs.all());
+        }
+        assertEquals(FailureReason.REJECTED_BY_NETWORK, transactions.row(TASK).getFailureReason());
+    }
+
+    // ---------- task desconhecida e banco ----------
+
+    @Test
+    void unknownTaskIs404WithAWarning() {
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertNotificationRefused(notification("CONFIRMED", HASH, null), 404, "TRANSACTION_NOT_FOUND",
+                    NOT_FOUND_MESSAGE);
+
+            assertEquals("WARN Webhook: task " + TASK + " desconhecida (TRANSACTION_NOT_FOUND)", logs.all());
+        }
+        assertEquals(0, transactions.updateCalls);
+    }
+
+    @Test
+    void databaseFailureOnReadIs500AndLogsTheClassOnly() {
+        saveRow();
+        transactions.failOnFind = new IllegalStateException("jdbc:mysql://core-db detalhe-do-banco");
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            ApiException e = assertNotificationRefused(notification("CONFIRMED", HASH, null), 500,
+                    "INTERNAL_ERROR", "Erro interno.");
+
+            assertEquals("WARN Webhook: falha ao consultar o banco (IllegalStateException)", logs.all());
+            assertFalse(e.getMessage().contains("detalhe-do-banco"));
+        }
+        assertEquals(0, transactions.updateCalls);
+    }
+
+    @Test
+    void databaseFailureOnUpdateIs500AndLogsTheClassOnly() {
+        saveRow();
+        transactions.failOnUpdate = new IllegalStateException("jdbc:mysql://core-db detalhe-do-banco");
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertNotificationRefused(notification("CONFIRMED", HASH, null), 500, "INTERNAL_ERROR", "Erro interno.");
+
+            assertEquals("WARN Atualização da transação: falha no banco (IllegalStateException)", logs.all());
+        }
+    }
+
+    // ---------- validação: 400 REQUEST_INVALID ----------
+
+    @Test
+    void nullRequestIsInvalid() {
+        assertNotificationInvalid(null);
+    }
+
+    @Test
+    void taskIdMissingOrMalformedIsInvalid() {
+        for (String taskId : Arrays.asList(null, "", "abc", TASK + "0", TASK.substring(1) + "g",
+                TASK.substring(1) + "/", "../../wallets/aaaaaaaaaaaaaaaaaaaaa")) {
+            assertNotificationInvalid(new TaskCompletedRequest(taskId, "CONFIRMED", HASH, null, WEBHOOK_UPDATED_AT));
+        }
+    }
+
+    @Test
+    void statusMissingPendingLowercaseOrUnknownIsInvalid() {
+        for (String status : Arrays.asList(null, "", "PENDING", "confirmed", "failed", "DONE", " CONFIRMED")) {
+            assertNotificationInvalid(notification(status, HASH, "INTERNAL_ERROR"));
+        }
+    }
+
+    @Test
+    void updatedAtMissingOrInvalidIsInvalid() {
+        for (String updatedAt : Arrays.asList(null, "", "ontem", "2026-10-20", "2026-10-20T14:36:10",
+                "2026-13-20T14:36:10Z", "1700000000")) {
+            assertNotificationInvalid(new TaskCompletedRequest(TASK, "CONFIRMED", HASH, null, updatedAt));
+        }
+    }
+
+    @Test
+    void invalidHashIsInvalid() {
+        for (String hash : List.of("", "0x5c504ed4", HASH.substring(2) + "00", HASH.substring(0, 65) + "g",
+                HASH + "0")) {
+            assertNotificationInvalid(notification("CONFIRMED", hash, null));
+            assertNotificationInvalid(notification("FAILED", hash, "TRANSACTION_REVERTED"));
+        }
+    }
+
+    @Test
+    void failedWithoutReasonIsInvalid() {
+        assertNotificationInvalid(notification("FAILED", null, null));
+        assertNotificationInvalid(notification("FAILED", HASH, null));
+    }
+
+    @Test
+    void confirmedWithoutHashIsInvalid() {
+        assertNotificationInvalid(notification("CONFIRMED", null, null));
+    }
+
+    @Test
+    void unknownReasonIsInvalidEvenWithConfirmed() {
+        for (String reason : List.of("", "OUTRO", "rejected_by_network")) {
+            assertNotificationInvalid(notification("FAILED", null, reason));
+            assertNotificationInvalid(notification("CONFIRMED", HASH, reason));
+        }
     }
 }

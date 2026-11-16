@@ -6,6 +6,7 @@ import com.lemma.core.client.BlockchainUnavailableException;
 import com.lemma.core.client.TaskState;
 import com.lemma.core.dto.SendTransactionRequest;
 import com.lemma.core.dto.SendTransactionResponse;
+import com.lemma.core.dto.TaskCompletedRequest;
 import com.lemma.core.dto.TransactionResponse;
 import com.lemma.core.exception.ApiException;
 import com.lemma.core.model.EthTransaction;
@@ -20,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.Objects;
@@ -27,7 +29,8 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * Envio de transação (CT9, seção 8.3 do desenho) e acompanhamento (CT13, seção 8.4).
+ * Envio de transação (CT9, seção 8.3 do desenho), acompanhamento (CT13, seção
+ * 8.4) e aviso de task concluída (CT15, seção 8.5).
  *
  * Ordem (E4): validar o corpo → ler o usuário (origem = ethereum_address) → CT10 →
  * gravar eth_transaction PENDING → responder. A origem é sempre a carteira do
@@ -46,6 +49,10 @@ import java.util.regex.Pattern;
  * Acompanhamento: a leitura é sempre por taskId e userId juntos. O estado final é
  * devolvido sem consultar o Blockchain Service; o PENDING consulta o CT14 e, se
  * houver novidade, grava pelo applyTaskState, o mesmo caminho do webhook (CT15).
+ *
+ * Webhook: só estado final; responde sempre 204 para task conhecida, tenha
+ * alterado algo ou não. Notificação que contradiz o estado final gravado não muda
+ * nada e vai ao log em WARN (só taskId e status, nunca hash nem corpo).
  */
 public class TransactionService {
 
@@ -62,6 +69,9 @@ public class TransactionService {
 
     /** taskId: UUID em texto (CHAR(36)). Também protege o caminho do CT14. */
     static final Pattern TASK_ID_FORMAT = Pattern.compile("^[0-9a-fA-F-]{36}$");
+
+    /** Hash de transação: 0x e 64 hexadecimais (cabe no VARCHAR(66)). */
+    static final Pattern TRANSACTION_HASH_FORMAT = Pattern.compile("^0x[0-9a-fA-F]{64}$");
 
     private final UserRepository userRepository;
     private final EthTransactionRepository transactionRepository;
@@ -156,6 +166,117 @@ public class TransactionService {
             return transactionRepository.updateIfPending(taskId, status, transactionHash, failureReason, now) > 0;
         } catch (RuntimeException e) {
             log.warn("Atualização da transação: falha no banco ({})", e.getClass().getSimpleName());
+            throw internalError();
+        }
+    }
+
+    /**
+     * CT15: aplica o estado final avisado pelo Blockchain Service.
+     *
+     * Validação (tudo 400 REQUEST_INVALID, mensagem fixa): taskId no formato de
+     * UUID; status CONFIRMED ou FAILED; updatedAt um instante ISO 8601 (só
+     * validado: o updated_at gravado é o relógio do Core API); hash, se vier, no
+     * formato; motivo, se vier, um valor do enum. FAILED exige motivo e aceita vir
+     * sem hash (a rede recusou); CONFIRMED exige hash, e um motivo válido com ele é
+     * ignorado.
+     *
+     * Task desconhecida: 404 TRANSACTION_NOT_FOUND (a notificação chegou antes do
+     * INSERT do CT9; o CT13 recupera depois). Sem log no sucesso.
+     */
+    public void notifyTaskCompleted(TaskCompletedRequest request) {
+        if (request == null) {
+            throw requestInvalid();
+        }
+        String taskId = request.taskId();
+        if (taskId == null || !TASK_ID_FORMAT.matcher(taskId).matches()) {
+            throw requestInvalid();
+        }
+        taskId = taskId.toLowerCase(Locale.ROOT);
+        TransactionStatus status = finalStatus(request.status());
+        String transactionHash = optionalHash(request.transactionHash());
+        FailureReason failureReason = optionalFailureReason(request.failureReason());
+        requireInstant(request.updatedAt());
+
+        if (status == TransactionStatus.FAILED && failureReason == null) {
+            throw requestInvalid();
+        }
+        if (status == TransactionStatus.CONFIRMED) {
+            if (transactionHash == null) {
+                throw requestInvalid();
+            }
+            failureReason = null;
+        }
+
+        if (findForWebhook(taskId).isEmpty()) {
+            log.warn("Webhook: task {} desconhecida (TRANSACTION_NOT_FOUND)", taskId);
+            throw transactionNotFound();
+        }
+        if (applyTaskState(taskId, status, transactionHash, failureReason)) {
+            return;
+        }
+
+        // Nada mudou: a linha já estava em estado final, e ele não muda mais. A
+        // releitura mostra qual estado venceu; se for o notificado, é um reenvio.
+        Optional<EthTransaction> stored = findForWebhook(taskId);
+        if (stored.isPresent() && !sameState(stored.get(), status, transactionHash, failureReason)) {
+            log.warn("Task {}: notificação contradiz o estado final ({} gravado, {} notificado)",
+                    taskId, stored.get().getStatus(), status);
+        }
+    }
+
+    /** Só estado final: CONFIRMED ou FAILED, exatamente assim. */
+    private static TransactionStatus finalStatus(String status) {
+        if (TransactionStatus.CONFIRMED.name().equals(status)) {
+            return TransactionStatus.CONFIRMED;
+        }
+        if (TransactionStatus.FAILED.name().equals(status)) {
+            return TransactionStatus.FAILED;
+        }
+        throw requestInvalid();
+    }
+
+    /** Ausente ou null: sem hash. Presente: no formato 0x + 64 hexadecimais. */
+    private static String optionalHash(String transactionHash) {
+        if (transactionHash == null) {
+            return null;
+        }
+        if (!TRANSACTION_HASH_FORMAT.matcher(transactionHash).matches()) {
+            throw requestInvalid();
+        }
+        return transactionHash;
+    }
+
+    /** Ausente ou null: sem motivo. Presente: exatamente um valor do enum. */
+    private static FailureReason optionalFailureReason(String failureReason) {
+        if (failureReason == null) {
+            return null;
+        }
+        for (FailureReason reason : FailureReason.values()) {
+            if (reason.name().equals(failureReason)) {
+                return reason;
+            }
+        }
+        throw requestInvalid();
+    }
+
+    /** Obrigatório e um instante ISO 8601 (ex.: 2026-10-20T14:36:10Z). O valor não é usado. */
+    private static void requireInstant(String updatedAt) {
+        if (updatedAt == null) {
+            throw requestInvalid();
+        }
+        try {
+            Instant.parse(updatedAt);
+        } catch (DateTimeParseException e) {
+            throw requestInvalid();
+        }
+    }
+
+    /** Leitura do webhook, sem usuário. Falha do banco: 500, só a classe no log. */
+    private Optional<EthTransaction> findForWebhook(String taskId) {
+        try {
+            return transactionRepository.findByTaskId(taskId);
+        } catch (RuntimeException e) {
+            log.warn("Webhook: falha ao consultar o banco ({})", e.getClass().getSimpleName());
             throw internalError();
         }
     }
@@ -270,6 +391,11 @@ public class TransactionService {
     private static ApiException amountInvalid() {
         return new ApiException(400, "AMOUNT_INVALID",
                 "Informe um valor maior que zero, com no máximo 18 casas decimais e 20 dígitos inteiros.");
+    }
+
+    /** Corpo do webhook inválido: mensagem fixa, nunca eco do corpo. */
+    private static ApiException requestInvalid() {
+        return new ApiException(400, "REQUEST_INVALID", "Corpo da requisição inválido.");
     }
 
     /** Inexistente, de outro usuário ou taskId malformado: a mesma resposta. */
