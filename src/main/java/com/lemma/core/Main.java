@@ -2,10 +2,12 @@ package com.lemma.core;
 
 import com.lemma.core.client.BlockchainClient;
 import com.lemma.core.client.HttpBlockchainClient;
+import com.lemma.core.client.MarketDataClient;
 import com.lemma.core.config.AppConfig;
 import com.lemma.core.config.JsonConfig;
 import com.lemma.core.controller.AuthController;
 import com.lemma.core.controller.ErrorHandler;
+import com.lemma.core.controller.MarketController;
 import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
@@ -19,6 +21,7 @@ import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.security.ServiceKeyFilter;
 import com.lemma.core.security.TokenFilter;
 import com.lemma.core.service.AuthService;
+import com.lemma.core.service.MarketService;
 import com.lemma.core.service.TransactionService;
 import com.lemma.core.service.UserService;
 import com.lemma.core.service.WalletService;
@@ -72,18 +75,22 @@ public class Main {
         PasswordHasher passwordHasher = new PasswordHasher(PasswordHasher.DEFAULT_COST);
         BlockchainClient blockchainClient = new HttpBlockchainClient(config.blockchainServiceUrl(),
                 config.serviceKey(), Duration.ofSeconds(config.blockchainTimeoutSeconds()));
+        MarketDataClient marketDataClient = new MarketDataClient(config.externalDataServiceUrl(),
+                config.serviceKey(), Duration.ofSeconds(config.externalDataTimeoutSeconds()));
         JwtService jwtService = new JwtService(config.jwtSecret(), config.jwtTtlMinutes(), Clock.systemUTC());
         UserService userService = new UserService(userRepository, passwordHasher, blockchainClient);
         AuthService authService = new AuthService(userRepository, passwordHasher, jwtService);
         WalletService walletService = new WalletService(userRepository, blockchainClient);
         TransactionService transactionService = new TransactionService(userRepository, transactionRepository,
                 blockchainClient, Clock.systemUTC());
+        MarketService marketService = new MarketService(marketDataClient);
         Controllers controllers = new Controllers(
                 new UserController(userService),
                 new AuthController(authService),
                 new WalletController(walletService),
                 new TransactionController(transactionService),
-                new WebhookController(transactionService));
+                new WebhookController(transactionService),
+                new MarketController(marketService));
 
         Javalin app = createApp(config.corsAllowedOrigin(), jwtService, config.serviceKey(), controllers)
                 .start(config.serverPort());
@@ -101,7 +108,8 @@ public class Main {
 
     /** Os controllers montados, para não passar um parâmetro por controller. */
     public record Controllers(UserController user, AuthController auth, WalletController wallet,
-                              TransactionController transaction, WebhookController webhook) {
+                              TransactionController transaction, WebhookController webhook,
+                              MarketController market) {
     }
 
     /**
@@ -167,6 +175,7 @@ public class Main {
         javalin.routes.get("/wallet/balance", controllers.wallet()::balance);              // CT6
         javalin.routes.post("/transactions", controllers.transaction()::send);             // CT9
         javalin.routes.get("/transactions/{taskId}", controllers.transaction()::get);      // CT13
+        javalin.routes.get("/market/{assetId}", controllers.market()::get);                // CT17
 
         // Entre serviços, com chave de serviço (estão em SERVICE_KEY_ROUTES).
         javalin.routes.post("/webhooks/tasks", controllers.webhook()::notifyTaskCompleted); // CT15

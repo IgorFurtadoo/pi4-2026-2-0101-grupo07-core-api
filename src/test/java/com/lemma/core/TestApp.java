@@ -1,6 +1,9 @@
 package com.lemma.core;
 
+import com.lemma.core.client.FakeExternalDataService;
+import com.lemma.core.client.MarketDataClient;
 import com.lemma.core.controller.AuthController;
+import com.lemma.core.controller.MarketController;
 import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
@@ -11,6 +14,7 @@ import com.lemma.core.service.AuthService;
 import com.lemma.core.service.FakeBlockchainClient;
 import com.lemma.core.service.InMemoryEthTransactionRepository;
 import com.lemma.core.service.InMemoryUserRepository;
+import com.lemma.core.service.MarketService;
 import com.lemma.core.service.TransactionService;
 import com.lemma.core.service.UserService;
 import com.lemma.core.service.WalletService;
@@ -23,6 +27,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.function.Consumer;
@@ -30,8 +35,9 @@ import java.util.function.Consumer;
 /**
  * Sobe o Core API numa porta livre com a mesma configuração do Main
  * (Main.configure), services reais e dependências falsas: repositories em memória,
- * Blockchain Service falso, bcrypt de custo 4, segredo de JWT e chave de serviço
- * de teste e relógio fixo. Usado pelos testes HTTP.
+ * Blockchain Service falso, External Data Service falso (servidor HTTP do JDK, o
+ * mesmo MarketDataClient do Main), bcrypt de custo 4, segredo de JWT e chave de
+ * serviço de teste e relógio fixo. Usado pelos testes HTTP.
  */
 public final class TestApp {
 
@@ -50,6 +56,8 @@ public final class TestApp {
     public final InMemoryUserRepository repository = new InMemoryUserRepository();
     public final InMemoryEthTransactionRepository transactions = new InMemoryEthTransactionRepository();
     public final FakeBlockchainClient blockchain = new FakeBlockchainClient();
+    /** External Data Service falso; recebe a mesma chave de serviço, como no Main. Fechado no stop. */
+    public final FakeExternalDataService marketData = new FakeExternalDataService(SERVICE_KEY);
     public final PasswordHasher hasher = new PasswordHasher(4);
     public final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     public final JwtService jwtService = new JwtService(JWT_SECRET, JWT_TTL_MINUTES, clock);
@@ -70,12 +78,15 @@ public final class TestApp {
         AuthService authService = new AuthService(repository, hasher, jwtService);
         WalletService walletService = new WalletService(repository, blockchain);
         TransactionService transactionService = new TransactionService(repository, transactions, blockchain, clock);
+        MarketService marketService = new MarketService(
+                new MarketDataClient(marketData.baseUrl(), SERVICE_KEY, Duration.ofSeconds(2)));
         Main.Controllers controllers = new Main.Controllers(
                 new UserController(userService),
                 new AuthController(authService),
                 new WalletController(walletService),
                 new TransactionController(transactionService),
-                new WebhookController(transactionService));
+                new WebhookController(transactionService),
+                new MarketController(marketService));
         app = Javalin.create(javalin -> {
             Main.configure(javalin, CORS_ORIGIN, jwtService, SERVICE_KEY, controllers);
             extraRoutes.accept(javalin);
@@ -85,6 +96,7 @@ public final class TestApp {
 
     public void stop() {
         app.stop();
+        marketData.close();
     }
 
     /** Requisição para o caminho no servidor de teste; quem chama escolhe método, cabeçalhos e corpo. */
