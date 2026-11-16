@@ -16,6 +16,15 @@ public class ApiException extends RuntimeException {
         this.code = code;
     }
 
+    /**
+     * 401 TOKEN_INVALID, num ponto só: usada pelo TokenFilter (token ausente,
+     * inválido ou vencido) e pelos services que leem o usuário do token e não o
+     * acham mais (seção 8.2 do desenho). A resposta é a mesma nos dois casos.
+     */
+    public static ApiException tokenInvalid() {
+        return new ApiException(401, "TOKEN_INVALID", "Token ausente, inválido ou expirado.");
+    }
+
     public int getStatus() {
         return status;
     }

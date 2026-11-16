@@ -27,6 +27,9 @@ public class InMemoryUserRepository extends UserRepository {
     /** Quando verdadeiro, findByEmail não acha ninguém: simula a corrida entre dois cadastros. */
     public boolean hideFromFind;
 
+    /** Quando não nulo, o findById lança esta exceção (banco fora, por exemplo). */
+    public RuntimeException failOnFindById;
+
     public int saveCalls;
 
     public InMemoryUserRepository() {
@@ -49,6 +52,9 @@ public class InMemoryUserRepository extends UserRepository {
 
     @Override
     public Optional<User> findById(long id) {
+        if (failOnFindById != null) {
+            throw failOnFindById;
+        }
         return saved.stream().filter(user -> user.getId() == id).findFirst();
     }
 

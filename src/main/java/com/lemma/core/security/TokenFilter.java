@@ -21,8 +21,9 @@ import java.util.Set;
  * token nunca vai ao log. Com token válido, o id do usuário fica no contexto da
  * requisição e o controller o lê com {@link #userId(Context)}.
  *
- * O filtro não consulta o banco. Regra para os próximos passos (C4 e C5): a rota
- * que lê o usuário do token responde 401 TOKEN_INVALID se ele não existir mais.
+ * O filtro não consulta o banco. O service que lê o usuário do token responde
+ * 401 TOKEN_INVALID se ele não existir mais, com a mesma exceção deste filtro
+ * ({@link ApiException#tokenInvalid()}).
  */
 public class TokenFilter {
 
@@ -49,7 +50,7 @@ public class TokenFilter {
         try {
             ctx.attribute(USER_ID_ATTRIBUTE, jwtService.verify(token));
         } catch (InvalidTokenException e) {
-            throw new ApiException(401, "TOKEN_INVALID", "Token ausente, inválido ou expirado.");
+            throw ApiException.tokenInvalid();
         }
     }
 
