@@ -342,7 +342,7 @@ Rotas inexistentes: 404 e 405 com o corpo padrão do Javalin, como no Blockchain
 3. **`HttpBlockchainClient` e `MarketDataClient` contra um servidor HTTP local do JDK:** método, caminho, `X-Service-Key`, corpo exato, tradução dos erros da seção 7.
 4. **Rate limiting via HTTP:** com o External Data Service falso, as requisições acima do limite recebem 429 com `Retry-After` e o falso **não** vê chamada nenhuma além do limite.
 5. **Contra o MySQL de verdade (roteiro `scripts/`):** a atualização condicional da seção 8.4 e a restrição de unicidade só se provam no banco real; o repository em memória dos testes **não** prova isso. Entra no roteiro do passo C9.
-6. **Roteiro manual ponta a ponta** (`scripts/e2e-demo.sh`, passo C9): cadastrar, entrar, saldo, enviar da carteira abastecida, acompanhar até `CONFIRMED` com o Blockchain Service real. O webhook do Blockchain Service **nunca foi testado contra um receptor real**: este roteiro é a primeira vez.
+6. **Roteiro manual ponta a ponta** (`scripts/e2e-demo.sh`, passo C9): cadastrar, entrar, saldo, enviar da carteira abastecida, acompanhar até `CONFIRMED` com o Blockchain Service real. O webhook do Blockchain Service real já entregou um `FAILED` ao Core API no C6 (carteira sem saldo); este roteiro é a primeira vez com `CONFIRMED` e hash (seção 11.2).
 
 ### 11.1 Carteira abastecida e saldo real (C9, H04.4)
 
@@ -380,7 +380,7 @@ Rodadas de 16/11/2026, com o Blockchain Service real na rede `lemma-dev` (`CORE_
 
 **Abastecimento e o CT15.** A ficha do CT15 já prevê o 404 `TRANSACTION_NOT_FOUND` quando a linha ainda não existe, e o comportamento observado foi esse. A ficha não muda. O item 3 não é um webhook "perdido": ele chega e recebe 404. O efeito é o mesmo (sem retentativa, a linha só converge pelo CT14). A linha inserida pelo roteiro faz o abastecimento aparecer como uma transação do usuário para o próprio endereço: é dado de teste, não um envio do usuário.
 
-**ETH movimentado e gás (16/11/2026).** Demonstração → usuário: 0.003 ETH; usuário → demonstração: 2 × 0.0005 ETH. Preço do gás inferido do envio 1: 19 wei por unidade (0,000000019 gwei). Gás: abastecimento 0.0000000000038874 ETH (~204.600 de gás, conta nova, EIP-8037); cada envio 0.000000000000399 ETH (21.000 de gás). Carteira de demonstração: 0.0519999998678164 → 0.049999999863929 ETH. Ficaram 0.001999999999202 ETH na carteira do usuário de teste.
+**ETH movimentado e gás (16/11/2026).** Demonstração → usuário: 0.003 ETH; usuário → demonstração: 2 × 0.0005 ETH. Preço do gás inferido do envio 1: 19 wei por unidade (0,000000019 gwei). Gás: abastecimento 0.0000000000038874 ETH (~204.600 de gás, número inferido pela diferença de saldo da carteira de demonstração e pelo preço medido no envio 1; a explicação provável é a criação de conta nova sob o EIP-8037, não verificada na Sepolia); cada envio 0.000000000000399 ETH (21.000 de gás). Carteira de demonstração: 0.0519999998678164 → 0.049999999863929 ETH. Ficaram 0.001999999999202 ETH na carteira do usuário de teste.
 
 **Limites encontrados**
 

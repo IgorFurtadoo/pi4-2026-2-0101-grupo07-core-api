@@ -265,7 +265,7 @@ if [ -z "$FUND_WEI" ] || [ "$FUND_WEI" -le 0 ] || [ "$FUND_WEI" -gt "$MAX_FUND_W
   echo "FUND_ETH deve ser maior que zero e no máximo 0.005." >&2
   exit 2
 fi
-if [ "$SEND_WEI" -le 0 ] || [ "$SEND_WEI" -gt "$MAX_SEND_WEI" ]; then
+if [ -z "$SEND_WEI" ] || [ "$SEND_WEI" -le 0 ] || [ "$SEND_WEI" -gt "$MAX_SEND_WEI" ]; then
   echo "SEND_ETH deve ser maior que zero e no máximo 0.0005." >&2
   exit 2
 fi
