@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Testa o CT4 e o CT7 contra um Blockchain Service falso (servidor HTTP do próprio
+ * Testa o CT4, o CT7 e o CT10 contra um Blockchain Service falso (servidor HTTP do próprio
  * JDK), sem rede externa. O falso guarda a última requisição recebida e conta as
  * requisições.
  */
@@ -42,6 +42,7 @@ class HttpBlockchainClientTest {
     private volatile String receivedMethod;
     private volatile String receivedPath;
     private volatile String receivedServiceKey;
+    private volatile String receivedContentType;
     private volatile String receivedBody;
     private volatile String receivedRawPath;
     private volatile String receivedQuery;
@@ -67,6 +68,7 @@ class HttpBlockchainClientTest {
             receivedMethod = exchange.getRequestMethod();
             receivedPath = exchange.getRequestURI().getPath();
             receivedServiceKey = exchange.getRequestHeaders().getFirst("X-Service-Key");
+            receivedContentType = exchange.getRequestHeaders().getFirst("Content-Type");
             try (InputStream in = exchange.getRequestBody()) {
                 receivedBody = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             }
@@ -436,5 +438,254 @@ class HttpBlockchainClientTest {
         }
 
         assertEquals(0, requestCount.get());
+    }
+
+    // ==================== CT10 requestTransactionSubmission ====================
+
+    private static final String DESTINATION = "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4";
+    private static final String TASK_ID = "a3f1c2d4-5b6e-4f70-8a91-0c2d3e4f5a6b";
+    /** Valor com marca própria, para provar que não vai ao log. */
+    private static final BigDecimal AMOUNT = new BigDecimal("0.123456789012345678");
+
+    private static String acceptedBody(String taskIdJson, String statusJson) {
+        return "{\"taskId\":" + taskIdJson + ",\"status\":" + statusJson + "}";
+    }
+
+    private static final String ACCEPTED = acceptedBody("\"" + TASK_ID + "\"", "\"PENDING\"");
+
+    private static String submit(String baseUrl) {
+        return client(baseUrl).requestSubmission(ADDRESS, DESTINATION, AMOUNT);
+    }
+
+    private static void assertSubmissionUnavailable(String baseUrl) {
+        assertThrows(BlockchainUnavailableException.class, () -> submit(baseUrl));
+    }
+
+    /** O log nunca traz corpo, chave, URL, endereços (nas duas caixas) nem valor. */
+    private static void assertLogClean(String log) {
+        String lower = log.toLowerCase();
+        assertFalse(log.contains("mensagem-secreta-do-corpo"), log);
+        assertFalse(log.contains(SERVICE_KEY), log);
+        assertFalse(log.contains("127.0.0.1"), log);
+        assertFalse(lower.contains(ADDRESS.toLowerCase().substring(2)), log);
+        assertFalse(lower.contains(DESTINATION.toLowerCase().substring(2)), log);
+        assertFalse(log.contains("123456789012345678"), log);
+    }
+
+    /** O 202 é recusado e o log diz só "fora do formato", sem o corpo. */
+    private void assertAcceptedBodyRefused(String body) throws Exception {
+        String base = startServer(202, body);
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            assertSubmissionUnavailable(base);
+            assertEquals("WARN CT10 requestSubmission: HTTP 202 com corpo fora do formato", logs.all(), body);
+        }
+        assertEquals(1, requestCount.getAndSet(0), body);
+        stopServer();
+    }
+
+    // ---------- sucesso ----------
+
+    @Test
+    void submissionIsAPostToTransactionsWithServiceKeyJsonAndExactBody() throws Exception {
+        String base = startServer(202, ACCEPTED);
+
+        String taskId = submit(base);
+
+        assertEquals(TASK_ID, taskId);
+        assertEquals("POST", receivedMethod);
+        assertEquals("/transactions", receivedRawPath);
+        assertNull(receivedQuery);
+        assertEquals(SERVICE_KEY, receivedServiceKey);
+        assertEquals("application/json", receivedContentType);
+        assertEquals("{\"sourceAddress\":\"" + ADDRESS + "\",\"destinationAddress\":\"" + DESTINATION
+                + "\",\"amountEth\":0.123456789012345678}", receivedBody);
+        assertEquals(1, requestCount.get());
+    }
+
+    @Test
+    void amountIsWrittenAsAPlainJsonNumber() throws Exception {
+        record Case(BigDecimal amount, String json) {
+        }
+        List<Case> cases = List.of(
+                new Case(new BigDecimal("0.01"), "0.01"),
+                new Case(new BigDecimal("1E-18"), "0.000000000000000001"),
+                new Case(new BigDecimal("0.000000000000000001"), "0.000000000000000001"),
+                new Case(new BigDecimal("100"), "100"),
+                new Case(new BigDecimal("1E+2").setScale(0), "100"),
+                new Case(new BigDecimal("99999999999999999999.999999999999999999"),
+                        "99999999999999999999.999999999999999999"));
+
+        for (Case c : cases) {
+            String base = startServer(202, ACCEPTED);
+
+            client(base).requestSubmission(ADDRESS, DESTINATION, c.amount());
+
+            assertEquals("{\"sourceAddress\":\"" + ADDRESS + "\",\"destinationAddress\":\"" + DESTINATION
+                    + "\",\"amountEth\":" + c.json() + "}", receivedBody, c.json());
+            stopServer();
+        }
+    }
+
+    @Test
+    void uppercaseTaskIdIsAccepted() throws Exception {
+        String upper = TASK_ID.toUpperCase();
+        String base = startServer(202, acceptedBody("\"" + upper + "\"", "\"PENDING\""));
+
+        assertEquals(upper, submit(base));
+    }
+
+    @Test
+    void submissionSuccessIsNotLogged() throws Exception {
+        String base = startServer(202, ACCEPTED);
+
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            submit(base);
+            assertEquals(0, logs.lines().size());
+        }
+    }
+
+    // ---------- 202 fora do formato ----------
+
+    @Test
+    void taskIdMissingNotTextOrOutOfFormatIsRefused() throws Exception {
+        assertAcceptedBodyRefused("{\"status\":\"PENDING\"}");
+        assertAcceptedBodyRefused(acceptedBody("null", "\"PENDING\""));
+        assertAcceptedBodyRefused(acceptedBody("123", "\"PENDING\""));
+        assertAcceptedBodyRefused(acceptedBody("[\"" + TASK_ID + "\"]", "\"PENDING\""));
+        assertAcceptedBodyRefused(acceptedBody("\"\"", "\"PENDING\""));
+        assertAcceptedBodyRefused(acceptedBody("\"tarefa-1\"", "\"PENDING\""));
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID + "a\"", "\"PENDING\""));       // 37
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID.substring(1) + "\"", "\"PENDING\""));  // 35
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID.replace('a', 'g') + "\"", "\"PENDING\""));
+        assertAcceptedBodyRefused(acceptedBody("\"../../" + TASK_ID.substring(6) + "\"", "\"PENDING\""));
+    }
+
+    @Test
+    void statusMissingOrNotPendingIsRefused() throws Exception {
+        assertAcceptedBodyRefused("{\"taskId\":\"" + TASK_ID + "\"}");
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID + "\"", "null"));
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID + "\"", "\"CONFIRMED\""));
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID + "\"", "\"pending\""));
+        assertAcceptedBodyRefused(acceptedBody("\"" + TASK_ID + "\"", "1"));
+    }
+
+    @Test
+    void acceptedBodyThatIsNotAnObjectIsRefused() throws Exception {
+        assertAcceptedBodyRefused("");
+        assertAcceptedBodyRefused("[]");
+        assertAcceptedBodyRefused("\"" + TASK_ID + "\"");
+        assertAcceptedBodyRefused("null");
+        assertAcceptedBodyRefused("isto não é JSON");
+        assertAcceptedBodyRefused("{\"taskId\":\"" + TASK_ID + "\",");
+    }
+
+    @Test
+    void otherSuccessStatusesAreRefused() throws Exception {
+        for (int status : List.of(200, 201, 204)) {
+            String base = startServer(status, status == 204 ? "" : ACCEPTED);
+            try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+                assertSubmissionUnavailable(base);
+                assertEquals("WARN CT10 requestSubmission: HTTP " + status + " sem code", logs.all());
+            }
+            stopServer();
+        }
+    }
+
+    // ---------- 400 repassado ----------
+
+    @Test
+    void addressAndAmountInvalidAreRepassedRejectionsLoggedAsWarn() throws Exception {
+        for (String code : List.of("ADDRESS_INVALID", "AMOUNT_INVALID")) {
+            String base = startServer(400, "{\"code\":\"" + code + "\",\"message\":\"mensagem-secreta-do-corpo\"}");
+            try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+                BlockchainRejectedException e = assertThrows(BlockchainRejectedException.class, () -> submit(base));
+
+                assertEquals(code, e.getCode());
+                assertFalse(e.getMessage().contains("mensagem-secreta-do-corpo"));
+                assertEquals("WARN CT10 requestSubmission: HTTP 400 " + code, logs.all());
+                assertLogClean(logs.all());
+            }
+            assertEquals(1, requestCount.getAndSet(0), code);
+            stopServer();
+        }
+    }
+
+    // ---------- demais erros: indisponível ----------
+
+    @Test
+    void otherErrorsAreUnavailableWithTheRightLogLevel() throws Exception {
+        record Case(int status, String body, String expectedLog) {
+        }
+        String secret = ",\"message\":\"mensagem-secreta-do-corpo\"}";
+        List<Case> cases = List.of(
+                new Case(400, "{\"code\":\"REQUEST_INVALID\"" + secret,
+                        "ERROR CT10 requestSubmission: HTTP 400 REQUEST_INVALID; erro de configuração ou de dado"),
+                new Case(401, "{\"code\":\"SERVICE_KEY_INVALID\"" + secret,
+                        "ERROR CT10 requestSubmission: HTTP 401 SERVICE_KEY_INVALID;"
+                                + " a SERVICE_KEY difere da configurada no Blockchain Service"),
+                new Case(404, "{\"code\":\"WALLET_NOT_FOUND\"" + secret,
+                        "ERROR CT10 requestSubmission: HTTP 404 WALLET_NOT_FOUND; erro de configuração ou de dado"),
+                new Case(400, "{\"code\":\"OUTRO_CODE\"" + secret, "WARN CT10 requestSubmission: HTTP 400 OUTRO_CODE"),
+                new Case(400, "{\"code\":\"address_invalid\"" + secret, "WARN CT10 requestSubmission: HTTP 400 sem code"),
+                new Case(400, "<html>Bad Request</html>", "WARN CT10 requestSubmission: HTTP 400 sem code"),
+                // O code de recusa só é repassado com 400.
+                new Case(404, "{\"code\":\"ADDRESS_INVALID\"" + secret, "WARN CT10 requestSubmission: HTTP 404 ADDRESS_INVALID"),
+                new Case(409, "{\"code\":\"AMOUNT_INVALID\"" + secret, "WARN CT10 requestSubmission: HTTP 409 AMOUNT_INVALID"),
+                new Case(404, "", "WARN CT10 requestSubmission: HTTP 404 sem code"),
+                new Case(500, "{\"code\":\"INTERNAL_ERROR\"" + secret, "WARN CT10 requestSubmission: HTTP 500 INTERNAL_ERROR"),
+                new Case(502, "<html>Bad Gateway</html>", "WARN CT10 requestSubmission: HTTP 502 sem code"));
+
+        for (Case c : cases) {
+            String base = startServer(c.status(), c.body());
+            try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+                assertSubmissionUnavailable(base);
+
+                assertEquals(c.expectedLog(), logs.all(), c.body());
+                assertLogClean(logs.all());
+            }
+            assertEquals(1, requestCount.getAndSet(0), c.body());
+            stopServer();
+        }
+    }
+
+    // ---------- rede: uma única tentativa ----------
+
+    @Test
+    void submissionSlowerThanTimeoutFailsInTimeWithASingleRequest() throws Exception {
+        String base = startServer(202, ACCEPTED, 5_000);
+
+        long start = System.nanoTime();
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            assertSubmissionUnavailable(base);
+            assertEquals("WARN CT10 requestSubmission: falha de rede (HttpTimeoutException)", logs.all());
+            assertLogClean(logs.all());
+        }
+        long elapsedMillis = Duration.ofNanos(System.nanoTime() - start).toMillis();
+
+        assertTrue(elapsedMillis < 3_000, "devia desistir perto de 1 s, levou " + elapsedMillis + " ms");
+        assertEquals(1, requestCount.get());
+    }
+
+    @Test
+    void submissionConnectionRefusedFails() throws Exception {
+        int closedPort;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            closedPort = socket.getLocalPort();
+        }
+
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            assertSubmissionUnavailable("http://127.0.0.1:" + closedPort);
+            assertEquals("WARN CT10 requestSubmission: falha de rede (ConnectException)", logs.all());
+        }
+    }
+
+    @Test
+    void serverErrorIsNotRetried() throws Exception {
+        String base = startServer(500, "{\"code\":\"INTERNAL_ERROR\"}");
+
+        assertSubmissionUnavailable(base);
+        Thread.sleep(200); // dá tempo de uma segunda requisição chegar, se houvesse
+
+        assertEquals(1, requestCount.get());
     }
 }
