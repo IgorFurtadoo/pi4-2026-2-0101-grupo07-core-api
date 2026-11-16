@@ -5,7 +5,6 @@ import java.math.BigDecimal;
 /**
  * Chamadas ao Blockchain Service (seção 7.1 do desenho). É interface só para os
  * testes dos services usarem um Blockchain Service falso, sem rede (seção 4.2).
- * O CT14 entra no passo C6.
  */
 public interface BlockchainClient {
 
@@ -37,4 +36,15 @@ public interface BlockchainClient {
      * @throws BlockchainUnavailableException em qualquer outra resposta que não seja a esperada
      */
     String requestSubmission(String sourceAddress, String destinationAddress, BigDecimal amountEth);
+
+    /**
+     * CT14 getTask: estado atual da task no Blockchain Service (consulta ativa do
+     * CT13). Tempo limite próprio, curto e fixo (5 s): a falha é tolerada.
+     *
+     * @param taskId taskId já conferido pelo service (formato de UUID)
+     * @throws BlockchainUnavailableException em qualquer resposta que não seja a esperada
+     *         (inclusive 404 TASK_NOT_FOUND), ou se o taskId estiver fora do formato
+     *         (a chamada nem é feita)
+     */
+    TaskState getTask(String taskId);
 }

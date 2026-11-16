@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.cfg.JsonNodeFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.lemma.core.model.FailureReason;
+import com.lemma.core.model.TransactionStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +26,8 @@ import java.util.regex.Pattern;
  * Cliente HTTP do Blockchain Service (seção 7.1 do desenho), com o HttpClient do JDK.
  *
  * Toda chamada leva X-Service-Key. Tempo limite de conexão de 3 s e de resposta
- * configurável (BLOCKCHAIN_TIMEOUT_SECONDS). Qualquer resposta que não seja a
+ * configurável (BLOCKCHAIN_TIMEOUT_SECONDS), menos o CT14, que tem tempo fixo de
+ * 5 s (a falha dele é tolerada). Qualquer resposta que não seja a
  * esperada vira {@link BlockchainUnavailableException}; a exceção é a recusa do
  * CT10 (400 ADDRESS_INVALID ou AMOUNT_INVALID), que vira {@link BlockchainRejectedException}.
  *
@@ -51,9 +54,16 @@ public class HttpBlockchainClient implements BlockchainClient {
 
     static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
 
+    /**
+     * Tempo de resposta do CT14, fixo (seção 7.1 do desenho): a consulta ativa roda
+     * dentro do polling do Frontend, e a falha dela só devolve o estado local.
+     */
+    static final Duration GET_TASK_TIMEOUT = Duration.ofSeconds(5);
+
     private static final String CT4 = "CT4 createWallet";
     private static final String CT7 = "CT7 getWalletBalance";
     private static final String CT10 = "CT10 requestSubmission";
+    private static final String CT14 = "CT14 getTask";
 
     /** O CT7 converte de wei para ETH: nunca mais de 18 casas. */
     private static final int MAX_ETH_SCALE = 18;
@@ -71,6 +81,9 @@ public class HttpBlockchainClient implements BlockchainClient {
 
     /** taskId do CT10: UUID em texto, que cabe no CHAR(36) do eth_transaction. */
     private static final Pattern TASK_ID = Pattern.compile("^[0-9a-fA-F-]{36}$");
+
+    /** Hash de transação: 0x e 64 hexadecimais (cabe no VARCHAR(66) do eth_transaction). */
+    private static final Pattern TRANSACTION_HASH = Pattern.compile("^0x[0-9a-fA-F]{64}$");
 
     /**
      * Codes que indicam erro de configuração ou de dado, não indisponibilidade: ERROR
@@ -93,13 +106,20 @@ public class HttpBlockchainClient implements BlockchainClient {
     private final String baseUrl;
     private final String serviceKey;
     private final Duration responseTimeout;
+    private final Duration getTaskTimeout;
     private final HttpClient httpClient;
 
-    /** baseUrl sem barra final (o AppConfig já remove). */
+    /** baseUrl sem barra final (o AppConfig já remove). O CT14 usa {@link #GET_TASK_TIMEOUT}. */
     public HttpBlockchainClient(String baseUrl, String serviceKey, Duration responseTimeout) {
+        this(baseUrl, serviceKey, responseTimeout, GET_TASK_TIMEOUT);
+    }
+
+    /** Só para os testes: troca o tempo do CT14, para não esperar 5 s. */
+    HttpBlockchainClient(String baseUrl, String serviceKey, Duration responseTimeout, Duration getTaskTimeout) {
         this.baseUrl = baseUrl;
         this.serviceKey = serviceKey;
         this.responseTimeout = responseTimeout;
+        this.getTaskTimeout = getTaskTimeout;
         // HTTP/1.1: sem tentativa de upgrade para HTTP/2 em http:// simples.
         this.httpClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
@@ -257,6 +277,111 @@ public class HttpBlockchainClient implements BlockchainClient {
             return null;
         }
         return taskIdNode.asText();
+    }
+
+    /**
+     * CT14: GET /tasks/{taskId} sem corpo →
+     * 200 { taskId, status, transactionHash?, failureReason?, updatedAt }.
+     *
+     * Qualquer status diferente de 200 (inclusive 404 TASK_NOT_FOUND) e qualquer
+     * corpo fora do formato viram {@link BlockchainUnavailableException}. Só
+     * SERVICE_KEY_INVALID sai como ERROR; os demais, WARN (a consulta se repete a
+     * cada polling). O taskId nunca vai ao log.
+     */
+    @Override
+    public TaskState getTask(String taskId) {
+        // Antes de montar a URL: o taskId vai no caminho.
+        if (taskId == null || !TASK_ID.matcher(taskId).matches()) {
+            log.error("{}: taskId fora do formato; a chamada não foi feita", CT14);
+            throw new BlockchainUnavailableException(CT14);
+        }
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/tasks/" + taskId))
+                .timeout(getTaskTimeout)
+                .header("X-Service-Key", serviceKey)
+                .GET()
+                .build();
+
+        HttpResponse<String> response = send(CT14, request);
+
+        if (response.statusCode() != 200) {
+            logUnexpectedStatus(CT14, response, Set.of());
+            throw new BlockchainUnavailableException(CT14);
+        }
+        TaskState state = readTaskState(response.body(), taskId);
+        if (state == null) {
+            log.warn("{}: HTTP 200 com corpo fora do formato", CT14);
+            throw new BlockchainUnavailableException(CT14);
+        }
+        return state;
+    }
+
+    /**
+     * Confere o corpo do CT14: objeto JSON; taskId texto igual ao pedido (sem
+     * diferença de caixa); status texto exatamente PENDING, CONFIRMED ou FAILED;
+     * transactionHash ausente, null ou texto no formato do hash; failureReason
+     * ausente, null ou um valor do enum. Coerência: FAILED exige motivo, PENDING e
+     * CONFIRMED não o aceitam, e CONFIRMED exige hash. O updatedAt não é lido.
+     * Devolve null se qualquer coisa estiver fora disso.
+     */
+    private static TaskState readTaskState(String body, String taskId) {
+        JsonNode root = readJson(body);
+        if (root == null || !root.isObject()) {
+            return null;
+        }
+        JsonNode taskIdNode = root.path("taskId");
+        if (!taskIdNode.isTextual() || !taskId.equalsIgnoreCase(taskIdNode.asText())) {
+            return null;
+        }
+        TransactionStatus status = enumValue(root.path("status"), TransactionStatus.class);
+        if (status == null) {
+            return null;
+        }
+
+        JsonNode hashNode = root.path("transactionHash");
+        String transactionHash = null;
+        if (!isAbsent(hashNode)) {
+            if (!hashNode.isTextual() || !TRANSACTION_HASH.matcher(hashNode.asText()).matches()) {
+                return null;
+            }
+            transactionHash = hashNode.asText();
+        }
+
+        JsonNode reasonNode = root.path("failureReason");
+        FailureReason failureReason = null;
+        if (!isAbsent(reasonNode)) {
+            failureReason = enumValue(reasonNode, FailureReason.class);
+            if (failureReason == null) {
+                return null;
+            }
+        }
+
+        boolean failed = status == TransactionStatus.FAILED;
+        if (failed != (failureReason != null)) {
+            return null;
+        }
+        if (status == TransactionStatus.CONFIRMED && transactionHash == null) {
+            return null;
+        }
+        return new TaskState(status, transactionHash, failureReason);
+    }
+
+    /** Campo ausente ou null. */
+    private static boolean isAbsent(JsonNode node) {
+        return node.isMissingNode() || node.isNull();
+    }
+
+    /** Texto igual, com a mesma caixa, ao nome de um valor do enum; senão null. */
+    private static <E extends Enum<E>> E enumValue(JsonNode node, Class<E> type) {
+        if (!node.isTextual()) {
+            return null;
+        }
+        for (E value : type.getEnumConstants()) {
+            if (value.name().equals(node.asText())) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private HttpResponse<String> send(String contract, HttpRequest request) {

@@ -1,6 +1,8 @@
 package com.lemma.core.client;
 
 import com.lemma.core.LogCapture;
+import com.lemma.core.model.FailureReason;
+import com.lemma.core.model.TransactionStatus;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -23,10 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Testa o CT4, o CT7 e o CT10 contra um Blockchain Service falso (servidor HTTP do próprio
+ * Testa o CT4, o CT7, o CT10 e o CT14 contra um Blockchain Service falso (servidor HTTP do próprio
  * JDK), sem rede externa. O falso guarda a última requisição recebida e conta as
  * requisições.
  */
@@ -687,5 +690,261 @@ class HttpBlockchainClientTest {
         Thread.sleep(200); // dá tempo de uma segunda requisição chegar, se houvesse
 
         assertEquals(1, requestCount.get());
+    }
+
+    // ==================== CT14 getTask ====================
+
+    private static final String TASK = "b4e2d3c5-6c7f-4a81-9ba2-1d3e4f5a6b7c";
+    private static final String HASH = "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060";
+    private static final String UPDATED_AT = "\"updatedAt\":\"2026-10-20T14:36:10Z\"";
+
+    /** Corpo do CT14 com os campos dados (já em JSON) e o updatedAt. */
+    private static String taskBody(String fields) {
+        return "{\"taskId\":\"" + TASK + "\"," + fields + "," + UPDATED_AT + "}";
+    }
+
+    private static TaskState getTask(String baseUrl) {
+        return client(baseUrl).getTask(TASK);
+    }
+
+    /** O 200 é recusado e o log diz só "fora do formato", sem o corpo; uma requisição. */
+    private void assertTaskBodyRefused(String body) throws Exception {
+        String base = startServer(200, body);
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            assertThrows(BlockchainUnavailableException.class, () -> getTask(base), body);
+            assertEquals("WARN CT14 getTask: HTTP 200 com corpo fora do formato", logs.all(), body);
+        }
+        assertEquals(1, requestCount.getAndSet(0), body);
+        stopServer();
+    }
+
+    /** O log do CT14 nunca traz o taskId (nas duas caixas), o hash, corpo, chave nem URL. */
+    private static void assertTaskLogClean(String log) {
+        String lower = log.toLowerCase();
+        assertFalse(lower.contains(TASK), log);
+        assertFalse(lower.contains(HASH.substring(2)), log);
+        assertFalse(log.contains("mensagem-secreta-do-corpo"), log);
+        assertFalse(log.contains(SERVICE_KEY), log);
+        assertFalse(log.contains("127.0.0.1"), log);
+        assertFalse(log.contains("/tasks"), log);
+    }
+
+    // ---------- sucesso ----------
+
+    @Test
+    void getTaskIsAGetToTasksWithServiceKeyAndNoBody() throws Exception {
+        String base = startServer(200, taskBody("\"status\":\"PENDING\""));
+
+        getTask(base);
+
+        assertEquals("GET", receivedMethod);
+        assertEquals("/tasks/" + TASK, receivedRawPath);
+        assertNull(receivedQuery);
+        assertEquals(SERVICE_KEY, receivedServiceKey);
+        assertEquals("", receivedBody);
+        assertEquals(1, requestCount.get());
+    }
+
+    @Test
+    void validTaskStatesAreRead() throws Exception {
+        record Case(String fields, TaskState expected) {
+        }
+        List<Case> cases = List.of(
+                new Case("\"status\":\"PENDING\"",
+                        new TaskState(TransactionStatus.PENDING, null, null)),
+                new Case("\"status\":\"PENDING\",\"transactionHash\":null,\"failureReason\":null",
+                        new TaskState(TransactionStatus.PENDING, null, null)),
+                new Case("\"status\":\"PENDING\",\"transactionHash\":\"" + HASH + "\"",
+                        new TaskState(TransactionStatus.PENDING, HASH, null)),
+                new Case("\"status\":\"CONFIRMED\",\"transactionHash\":\"" + HASH + "\"",
+                        new TaskState(TransactionStatus.CONFIRMED, HASH, null)),
+                new Case("\"status\":\"FAILED\",\"failureReason\":\"REJECTED_BY_NETWORK\"",
+                        new TaskState(TransactionStatus.FAILED, null,
+                                FailureReason.REJECTED_BY_NETWORK)),
+                new Case("\"status\":\"FAILED\",\"failureReason\":\"INTERNAL_ERROR\"",
+                        new TaskState(TransactionStatus.FAILED, null,
+                                FailureReason.INTERNAL_ERROR)),
+                new Case("\"status\":\"FAILED\",\"transactionHash\":\"" + HASH
+                        + "\",\"failureReason\":\"TRANSACTION_REVERTED\"",
+                        new TaskState(TransactionStatus.FAILED, HASH,
+                                FailureReason.TRANSACTION_REVERTED)));
+
+        for (Case c : cases) {
+            String base = startServer(200, taskBody(c.fields()));
+            try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+                assertEquals(c.expected(), getTask(base), c.fields());
+                assertEquals(0, logs.lines().size(), c.fields());
+            }
+            stopServer();
+        }
+    }
+
+    @Test
+    void responseTaskIdIsComparedWithoutCase() throws Exception {
+        String base = startServer(200, "{\"taskId\":\"" + TASK.toUpperCase() + "\",\"status\":\"PENDING\"}");
+
+        assertEquals(TransactionStatus.PENDING, getTask(base).status());
+    }
+
+    @Test
+    void extraFieldsAndMissingUpdatedAtAreIgnored() throws Exception {
+        String base = startServer(200, "{\"taskId\":\"" + TASK + "\",\"status\":\"PENDING\",\"outro\":1}");
+
+        assertEquals(TransactionStatus.PENDING, getTask(base).status());
+    }
+
+    // ---------- 200 fora do formato ----------
+
+    @Test
+    void taskIdDifferentMissingOrNotTextIsRefused() throws Exception {
+        assertTaskBodyRefused("{\"taskId\":\"a3f1c2d4-5b6e-4f70-8a91-0c2d3e4f5a6b\",\"status\":\"PENDING\"}");
+        assertTaskBodyRefused("{\"status\":\"PENDING\"}");
+        assertTaskBodyRefused("{\"taskId\":null,\"status\":\"PENDING\"}");
+        assertTaskBodyRefused("{\"taskId\":123,\"status\":\"PENDING\"}");
+        assertTaskBodyRefused("{\"taskId\":[\"" + TASK + "\"],\"status\":\"PENDING\"}");
+    }
+
+    @Test
+    void statusMissingLowercaseOrUnknownIsRefused() throws Exception {
+        assertTaskBodyRefused(taskBody("\"outro\":1"));
+        assertTaskBodyRefused(taskBody("\"status\":null"));
+        assertTaskBodyRefused(taskBody("\"status\":\"pending\""));
+        assertTaskBodyRefused(taskBody("\"status\":\"DONE\""));
+        assertTaskBodyRefused(taskBody("\"status\":1"));
+    }
+
+    @Test
+    void invalidHashIsRefused() throws Exception {
+        for (String hash : List.of("\"0x5c504ed4\"", "\"" + HASH.substring(2) + "00\"",
+                "\"" + HASH.substring(0, 65) + "g\"", "\"" + HASH + "0\"", "\"\"", "1", "true")) {
+            assertTaskBodyRefused(taskBody("\"status\":\"PENDING\",\"transactionHash\":" + hash));
+        }
+    }
+
+    @Test
+    void unknownFailureReasonIsRefused() throws Exception {
+        assertTaskBodyRefused(taskBody("\"status\":\"FAILED\",\"failureReason\":\"OUTRO\""));
+        assertTaskBodyRefused(taskBody("\"status\":\"FAILED\",\"failureReason\":\"rejected_by_network\""));
+        assertTaskBodyRefused(taskBody("\"status\":\"FAILED\",\"failureReason\":1"));
+    }
+
+    @Test
+    void incoherentStatusReasonAndHashAreRefused() throws Exception {
+        // FAILED sem motivo.
+        assertTaskBodyRefused(taskBody("\"status\":\"FAILED\""));
+        assertTaskBodyRefused(taskBody("\"status\":\"FAILED\",\"transactionHash\":\"" + HASH + "\""));
+        // Motivo com PENDING ou CONFIRMED.
+        assertTaskBodyRefused(taskBody("\"status\":\"PENDING\",\"failureReason\":\"INTERNAL_ERROR\""));
+        assertTaskBodyRefused(taskBody("\"status\":\"CONFIRMED\",\"transactionHash\":\"" + HASH
+                + "\",\"failureReason\":\"INTERNAL_ERROR\""));
+        // CONFIRMED sem hash.
+        assertTaskBodyRefused(taskBody("\"status\":\"CONFIRMED\""));
+        assertTaskBodyRefused(taskBody("\"status\":\"CONFIRMED\",\"transactionHash\":null"));
+    }
+
+    @Test
+    void taskBodyThatIsNotAnObjectIsRefused() throws Exception {
+        assertTaskBodyRefused("");
+        assertTaskBodyRefused("[]");
+        assertTaskBodyRefused("null");
+        assertTaskBodyRefused("\"PENDING\"");
+        assertTaskBodyRefused("isto não é JSON");
+        assertTaskBodyRefused("{\"taskId\":\"" + TASK + "\",");
+    }
+
+    // ---------- status de erro ----------
+
+    @Test
+    void getTaskErrorStatusesAreUnavailableWithTheRightLogLevel() throws Exception {
+        record Case(int status, String body, String expectedLog) {
+        }
+        String secret = ",\"message\":\"mensagem-secreta-do-corpo\"}";
+        List<Case> cases = List.of(
+                new Case(401, "{\"code\":\"SERVICE_KEY_INVALID\"" + secret,
+                        "ERROR CT14 getTask: HTTP 401 SERVICE_KEY_INVALID;"
+                                + " a SERVICE_KEY difere da configurada no Blockchain Service"),
+                new Case(404, "{\"code\":\"TASK_NOT_FOUND\"" + secret, "WARN CT14 getTask: HTTP 404 TASK_NOT_FOUND"),
+                new Case(500, "{\"code\":\"INTERNAL_ERROR\"" + secret, "WARN CT14 getTask: HTTP 500 INTERNAL_ERROR"),
+                new Case(502, "<html>Bad Gateway</html>", "WARN CT14 getTask: HTTP 502 sem code"),
+                new Case(201, taskBody("\"status\":\"PENDING\""), "WARN CT14 getTask: HTTP 201 sem code"),
+                new Case(204, "", "WARN CT14 getTask: HTTP 204 sem code"));
+
+        for (Case c : cases) {
+            String base = startServer(c.status(), c.body());
+            try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+                assertThrows(BlockchainUnavailableException.class, () -> getTask(base), c.body());
+
+                assertEquals(c.expectedLog(), logs.all(), c.body());
+                assertTaskLogClean(logs.all());
+            }
+            assertEquals(1, requestCount.getAndSet(0), c.body());
+            stopServer();
+        }
+    }
+
+    // ---------- rede ----------
+
+    @Test
+    void getTaskTimeoutConstantIsFiveSeconds() {
+        assertEquals(Duration.ofSeconds(5), HttpBlockchainClient.GET_TASK_TIMEOUT);
+    }
+
+    @Test
+    void getTaskUsesItsOwnTimeoutAndASingleRequest() throws Exception {
+        String base = startServer(200, taskBody("\"status\":\"PENDING\""), 2_000);
+        // Tempo geral longo (como BLOCKCHAIN_TIMEOUT_SECONDS) e o do CT14 curto.
+        HttpBlockchainClient client = new HttpBlockchainClient(base, SERVICE_KEY, Duration.ofSeconds(10),
+                Duration.ofMillis(300));
+
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            assertTimeoutPreemptively(Duration.ofMillis(1_500),
+                    () -> assertThrows(BlockchainUnavailableException.class, () -> client.getTask(TASK)));
+            assertEquals("WARN CT14 getTask: falha de rede (HttpTimeoutException)", logs.all());
+            assertTaskLogClean(logs.all());
+        }
+        assertEquals(1, requestCount.get());
+    }
+
+    @Test
+    void getTaskConnectionRefusedFails() throws Exception {
+        int closedPort;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            closedPort = socket.getLocalPort();
+        }
+
+        try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+            assertThrows(BlockchainUnavailableException.class, () -> getTask("http://127.0.0.1:" + closedPort));
+            assertEquals("WARN CT14 getTask: falha de rede (ConnectException)", logs.all());
+        }
+    }
+
+    @Test
+    void getTaskServerErrorIsNotRetried() throws Exception {
+        String base = startServer(500, "{\"code\":\"INTERNAL_ERROR\"}");
+
+        assertThrows(BlockchainUnavailableException.class, () -> getTask(base));
+        Thread.sleep(200); // dá tempo de uma segunda requisição chegar, se houvesse
+
+        assertEquals(1, requestCount.get());
+    }
+
+    // ---------- taskId fora do formato: nenhuma chamada ----------
+
+    @Test
+    void taskIdOutOfFormatMakesNoCall() throws Exception {
+        String base = startServer(200, taskBody("\"status\":\"PENDING\""));
+        HttpBlockchainClient client = client(base);
+
+        for (String taskId : Arrays.asList(null, "", "abc", "../../wallets/x/balance/aaaaaaaaaaaaaaa",
+                TASK + "/", TASK.substring(1) + "?", TASK.substring(1) + "/", TASK.substring(1) + "\n",
+                TASK.substring(1) + "g", TASK + "0")) {
+            try (LogCapture logs = new LogCapture(HttpBlockchainClient.class)) {
+                assertThrows(BlockchainUnavailableException.class, () -> client.getTask(taskId), taskId);
+                assertEquals("ERROR CT14 getTask: taskId fora do formato; a chamada não foi feita",
+                        logs.all(), taskId);
+            }
+        }
+
+        assertEquals(0, requestCount.get());
     }
 }
