@@ -195,6 +195,7 @@ Pegadinha de implementação: o **CORS** precisa ser tratado antes do `TokenFilt
 - **Corpo** (CT1, CT3, CT9): ausente, JSON malformado ou campo com tipo errado → 400 `REQUEST_INVALID`. O CT3 e o CT15 já usam esse código; CT1 e CT9 passam a usar (emenda). Campo ausente continua com o código do próprio campo.
 - **Endereço de destino** (CT9): o Core API confere só o formato `^0x[0-9a-fA-F]{40}$`. A regra completa (checksum EIP-55 em caixa mista) fica **no Blockchain Service**, uma vez só, e o Core API repassa o 400 `ADDRESS_INVALID` que ele devolver. Assim o Core API não precisa de biblioteca de Keccak.
 - **Valor** (CT9): `BigDecimal` maior que zero. O limite de 18 casas e 20 dígitos inteiros também fica no Blockchain Service (`AMOUNT_INVALID` repassado).
+  - Ajuste de 15/11/2026, decidido pelo responsável do módulo (Igor): o Core API também confere o limite (maior que zero, até 18 casas e 20 dígitos inteiros, zeros à direita não contam) antes de chamar o CT10, porque a coluna `DECIMAL(38,18)` não comporta mais que isso (descobrir depois do CT10 deixaria uma task sem registro local) e porque um `BigDecimal` como `1E+999999999` não pode virar texto plano. O Blockchain Service continua sendo a autoridade: o checksum do endereço segue só lá, e o `AMOUNT_INVALID` dele continua repassado. A decisão 4 da seção 12 não é reaberta.
 - **`assetId`** (CT17): `^[a-z0-9-]{1,64}$`. Fora disso, 404 `ASSET_NOT_FOUND` **sem** chamar o External Data Service (evita `../` e afins no caminho da chamada).
 
 ## 7. Chamadas aos outros módulos

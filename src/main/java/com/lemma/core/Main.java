@@ -6,15 +6,18 @@ import com.lemma.core.config.AppConfig;
 import com.lemma.core.config.JsonConfig;
 import com.lemma.core.controller.AuthController;
 import com.lemma.core.controller.ErrorHandler;
+import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
 import com.lemma.core.repository.Database;
+import com.lemma.core.repository.EthTransactionRepository;
 import com.lemma.core.repository.UserRepository;
 import com.lemma.core.security.CorsFilter;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.security.TokenFilter;
 import com.lemma.core.service.AuthService;
+import com.lemma.core.service.TransactionService;
 import com.lemma.core.service.UserService;
 import com.lemma.core.service.WalletService;
 import io.javalin.Javalin;
@@ -61,6 +64,7 @@ public class Main {
 
         // Montagem manual: repository e client → service → controller.
         UserRepository userRepository = new UserRepository(sessionFactory);
+        EthTransactionRepository transactionRepository = new EthTransactionRepository(sessionFactory);
         PasswordHasher passwordHasher = new PasswordHasher(PasswordHasher.DEFAULT_COST);
         BlockchainClient blockchainClient = new HttpBlockchainClient(config.blockchainServiceUrl(),
                 config.serviceKey(), Duration.ofSeconds(config.blockchainTimeoutSeconds()));
@@ -68,12 +72,15 @@ public class Main {
         UserService userService = new UserService(userRepository, passwordHasher, blockchainClient);
         AuthService authService = new AuthService(userRepository, passwordHasher, jwtService);
         WalletService walletService = new WalletService(userRepository, blockchainClient);
+        TransactionService transactionService = new TransactionService(userRepository, transactionRepository,
+                blockchainClient, Clock.systemUTC());
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
         WalletController walletController = new WalletController(walletService);
+        TransactionController transactionController = new TransactionController(transactionService);
 
         Javalin app = createApp(config.corsAllowedOrigin(), jwtService, userController, authController,
-                walletController).start(config.serverPort());
+                walletController, transactionController).start(config.serverPort());
 
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
@@ -98,9 +105,10 @@ public class Main {
     /** Cria o Javalin com a configuração de {@link #configure}, sem abrir a porta. */
     public static Javalin createApp(String corsAllowedOrigin, JwtService jwtService,
                                     UserController userController, AuthController authController,
-                                    WalletController walletController) {
+                                    WalletController walletController,
+                                    TransactionController transactionController) {
         return Javalin.create(javalin -> configure(javalin, corsAllowedOrigin, jwtService,
-                userController, authController, walletController));
+                userController, authController, walletController, transactionController));
     }
 
     /**
@@ -113,7 +121,8 @@ public class Main {
      */
     public static void configure(JavalinConfig javalin, String corsAllowedOrigin, JwtService jwtService,
                                  UserController userController, AuthController authController,
-                                 WalletController walletController) {
+                                 WalletController walletController,
+                                 TransactionController transactionController) {
         javalin.jsonMapper(JsonConfig.jsonMapper());
         // Rota existente com método errado responde 405, não 404.
         javalin.http.prefer405over404 = true;
@@ -134,6 +143,7 @@ public class Main {
 
         // Com token (fora de PUBLIC_ROUTES).
         javalin.routes.get("/wallet/balance", walletController::balance);    // CT6
+        javalin.routes.post("/transactions", transactionController::send);   // CT9
     }
 
     /**

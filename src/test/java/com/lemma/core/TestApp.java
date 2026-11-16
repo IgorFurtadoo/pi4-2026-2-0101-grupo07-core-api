@@ -1,13 +1,16 @@
 package com.lemma.core;
 
 import com.lemma.core.controller.AuthController;
+import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.service.AuthService;
 import com.lemma.core.service.FakeBlockchainClient;
+import com.lemma.core.service.InMemoryEthTransactionRepository;
 import com.lemma.core.service.InMemoryUserRepository;
+import com.lemma.core.service.TransactionService;
 import com.lemma.core.service.UserService;
 import com.lemma.core.service.WalletService;
 import io.javalin.Javalin;
@@ -25,7 +28,7 @@ import java.util.function.Consumer;
 
 /**
  * Sobe o Core API numa porta livre com a mesma configuração do Main
- * (Main.configure), services reais e dependências falsas: repository em memória,
+ * (Main.configure), services reais e dependências falsas: repositories em memória,
  * Blockchain Service falso, bcrypt de custo 4, segredo de JWT de teste e relógio
  * fixo. Usado pelos testes HTTP.
  */
@@ -42,9 +45,11 @@ public final class TestApp {
     private static final HttpClient http = HttpClient.newHttpClient();
 
     public final InMemoryUserRepository repository = new InMemoryUserRepository();
+    public final InMemoryEthTransactionRepository transactions = new InMemoryEthTransactionRepository();
     public final FakeBlockchainClient blockchain = new FakeBlockchainClient();
     public final PasswordHasher hasher = new PasswordHasher(4);
-    public final JwtService jwtService = new JwtService(JWT_SECRET, JWT_TTL_MINUTES, Clock.fixed(NOW, ZoneOffset.UTC));
+    public final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+    public final JwtService jwtService = new JwtService(JWT_SECRET, JWT_TTL_MINUTES, clock);
 
     private Javalin app;
 
@@ -61,11 +66,14 @@ public final class TestApp {
         UserService userService = new UserService(repository, hasher, blockchain);
         AuthService authService = new AuthService(repository, hasher, jwtService);
         WalletService walletService = new WalletService(repository, blockchain);
+        TransactionService transactionService = new TransactionService(repository, transactions, blockchain, clock);
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
         WalletController walletController = new WalletController(walletService);
+        TransactionController transactionController = new TransactionController(transactionService);
         app = Javalin.create(javalin -> {
-            Main.configure(javalin, CORS_ORIGIN, jwtService, userController, authController, walletController);
+            Main.configure(javalin, CORS_ORIGIN, jwtService, userController, authController, walletController,
+                    transactionController);
             extraRoutes.accept(javalin);
         }).start(0);
         return this;
