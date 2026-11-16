@@ -2,12 +2,14 @@ package com.lemma.core;
 
 import com.lemma.core.controller.AuthController;
 import com.lemma.core.controller.UserController;
+import com.lemma.core.controller.WalletController;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.service.AuthService;
 import com.lemma.core.service.FakeBlockchainClient;
 import com.lemma.core.service.InMemoryUserRepository;
 import com.lemma.core.service.UserService;
+import com.lemma.core.service.WalletService;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 
@@ -53,15 +55,17 @@ public final class TestApp {
 
     /**
      * Sobe com a configuração do Main (Main.configure) e, depois dela, as rotas que
-     * só existem no teste (por exemplo, uma rota protegida antes de o C4 existir).
+     * só existem no teste (por exemplo, uma rota protegida de teste, sem banco nem Blockchain Service).
      */
     public TestApp start(Consumer<JavalinConfig> extraRoutes) {
         UserService userService = new UserService(repository, hasher, blockchain);
         AuthService authService = new AuthService(repository, hasher, jwtService);
+        WalletService walletService = new WalletService(repository, blockchain);
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
+        WalletController walletController = new WalletController(walletService);
         app = Javalin.create(javalin -> {
-            Main.configure(javalin, CORS_ORIGIN, jwtService, userController, authController);
+            Main.configure(javalin, CORS_ORIGIN, jwtService, userController, authController, walletController);
             extraRoutes.accept(javalin);
         }).start(0);
         return this;

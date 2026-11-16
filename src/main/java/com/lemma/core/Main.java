@@ -7,6 +7,7 @@ import com.lemma.core.config.JsonConfig;
 import com.lemma.core.controller.AuthController;
 import com.lemma.core.controller.ErrorHandler;
 import com.lemma.core.controller.UserController;
+import com.lemma.core.controller.WalletController;
 import com.lemma.core.repository.Database;
 import com.lemma.core.repository.UserRepository;
 import com.lemma.core.security.CorsFilter;
@@ -15,6 +16,7 @@ import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.security.TokenFilter;
 import com.lemma.core.service.AuthService;
 import com.lemma.core.service.UserService;
+import com.lemma.core.service.WalletService;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 import org.hibernate.SessionFactory;
@@ -65,11 +67,13 @@ public class Main {
         JwtService jwtService = new JwtService(config.jwtSecret(), config.jwtTtlMinutes(), Clock.systemUTC());
         UserService userService = new UserService(userRepository, passwordHasher, blockchainClient);
         AuthService authService = new AuthService(userRepository, passwordHasher, jwtService);
+        WalletService walletService = new WalletService(userRepository, blockchainClient);
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
+        WalletController walletController = new WalletController(walletService);
 
-        Javalin app = createApp(config.corsAllowedOrigin(), jwtService, userController, authController)
-                .start(config.serverPort());
+        Javalin app = createApp(config.corsAllowedOrigin(), jwtService, userController, authController,
+                walletController).start(config.serverPort());
 
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
@@ -93,9 +97,10 @@ public class Main {
 
     /** Cria o Javalin com a configuração de {@link #configure}, sem abrir a porta. */
     public static Javalin createApp(String corsAllowedOrigin, JwtService jwtService,
-                                    UserController userController, AuthController authController) {
-        return Javalin.create(javalin ->
-                configure(javalin, corsAllowedOrigin, jwtService, userController, authController));
+                                    UserController userController, AuthController authController,
+                                    WalletController walletController) {
+        return Javalin.create(javalin -> configure(javalin, corsAllowedOrigin, jwtService,
+                userController, authController, walletController));
     }
 
     /**
@@ -107,7 +112,8 @@ public class Main {
      * before (CORS) → beforeMatched (token) → rota (ou 404/405) → after.
      */
     public static void configure(JavalinConfig javalin, String corsAllowedOrigin, JwtService jwtService,
-                                 UserController userController, AuthController authController) {
+                                 UserController userController, AuthController authController,
+                                 WalletController walletController) {
         javalin.jsonMapper(JsonConfig.jsonMapper());
         // Rota existente com método errado responde 405, não 404.
         javalin.http.prefer405over404 = true;
@@ -125,6 +131,9 @@ public class Main {
         // Públicas (estão em PUBLIC_ROUTES).
         javalin.routes.post("/users", userController::register);      // CT1
         javalin.routes.post("/auth/login", authController::login);    // CT3
+
+        // Com token (fora de PUBLIC_ROUTES).
+        javalin.routes.get("/wallet/balance", walletController::balance);    // CT6
     }
 
     /**

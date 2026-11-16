@@ -21,7 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * TokenFilter por HTTP real, com a configuração do Main (TestApp) e uma rota
- * protegida que só existe neste teste (as rotas de negócio chegam no C4).
+ * protegida que só existe neste teste (sem depender de banco nem do Blockchain
+ * Service). A rota real de saldo é testada em WalletControllerTest.
  */
 class TokenFilterTest {
 
@@ -190,14 +191,16 @@ class TokenFilterTest {
 
     @Test
     void unknownRouteIs404WithAndWithoutToken() throws Exception {
-        HttpResponse<String> withoutToken = app.send(app.request("/nao-existe").GET().build());
-        HttpResponse<String> withToken = app.send(app.request("/nao-existe")
+        HttpResponse<String> withoutToken = app.send(app.request("/rota-inexistente").GET().build());
+        HttpResponse<String> withToken = app.send(app.request("/rota-inexistente")
                 .header("Authorization", "Bearer " + validToken(1)).GET().build());
-        HttpResponse<String> futureRoute = app.send(app.request("/wallet/balance").GET().build());
+        HttpResponse<String> otherMethod = app.send(app.request("/rota-inexistente")
+                .POST(HttpRequest.BodyPublishers.noBody()).build());
 
+        // Rota sem handler: 404, não 401 (o filtro só roda em rota casada).
         assertEquals(404, withoutToken.statusCode());
         assertEquals(404, withToken.statusCode());
-        assertEquals(404, futureRoute.statusCode());
+        assertEquals(404, otherMethod.statusCode());
     }
 
     @Test
