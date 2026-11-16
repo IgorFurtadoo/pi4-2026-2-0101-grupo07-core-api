@@ -23,3 +23,14 @@ A carteira de cada usuário é criada vazia pelo Blockchain Service no cadastro.
 - Valor: `FUND_ETH`, padrão 0.003, no máximo 0.005.
 - Para enviar, a carteira do usuário precisa de **valor + 500.000 × preço do gás**, porque o Blockchain Service usa limite de gás fixo de 500.000. Com menos, a rede recusa e a transação termina `FAILED`/`REJECTED_BY_NETWORK`.
 - Só testnet: nunca mainnet nem valores reais.
+
+## Roteiros contra o Blockchain Service real
+
+Pré-requisitos: `core-api` e `core-db` no ar (`docker compose up -d`) e o Blockchain Service no ar na rede `lemma-dev`, com a mesma `SERVICE_KEY`. Os roteiros rodam no host e usam só `bash`, `curl`, `grep`, `sed`, `awk` e `docker`. Segredos não aparecem: a chave de serviço só é usada dentro do container `core-api`, a senha do banco só dentro do `core-db`, e a senha e o token do usuário de teste não são impressos. Não rode com `bash -x`. Os dois criam usuários `c9-teste-<aleatório>@example.com`, que ficam no banco.
+
+| Roteiro | O que prova | Custo | Tempo |
+|---|---|---|---|
+| `scripts/concurrency-update-if-pending.sh` | O `UPDATE` condicional sob concorrência: notificações contraditórias do webhook e `GET` em paralelo sobre linhas `PENDING` sintéticas | Nenhum ETH | ~30 s |
+| `DEMO_WALLET_ADDRESS=0x... scripts/e2e-demo.sh` | Cadastro, login, saldo, abastecimento, recuperação pela consulta ativa, envio com `CONFIRMED` gravado pelo webhook e envio com `GET` em paralelo | 0.003 ETH da demonstração para o usuário e 2 envios de 0.0005 de volta; gás de ~250 mil unidades no total | 2 a 5 min |
+
+Variáveis do `e2e-demo.sh`: `DEMO_WALLET_ADDRESS` (obrigatória), `CORE_API_URL` (padrão `http://127.0.0.1:8080`), `FUND_ETH` (0.003, no máximo 0.005), `SEND_ETH` (0.0005, no máximo 0.0005), `CONFIRM_TIMEOUT_SECONDS` (180), `RACE_LOOPS` (8), `RACE_INTERVAL` (0.1). Do `concurrency-update-if-pending.sh`: `ROWS` (10) e `ROUNDS` (5). Os dois aceitam `CORE_API_CONTAINER` e `CORE_DB_CONTAINER`; o `e2e-demo.sh` também `BLOCKCHAIN_CONTAINER`. Cada passo é impresso, e qualquer falha encerra com código 1. Resultados em `docs/desenho-core-api.md`, seções 11.1 e 11.2.
