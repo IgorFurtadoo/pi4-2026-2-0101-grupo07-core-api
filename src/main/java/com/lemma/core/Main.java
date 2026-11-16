@@ -9,6 +9,7 @@ import com.lemma.core.controller.ErrorHandler;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.repository.Database;
 import com.lemma.core.repository.UserRepository;
+import com.lemma.core.security.CorsFilter;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.security.TokenFilter;
@@ -67,7 +68,8 @@ public class Main {
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
 
-        Javalin app = createApp(jwtService, userController, authController).start(config.serverPort());
+        Javalin app = createApp(config.corsAllowedOrigin(), jwtService, userController, authController)
+                .start(config.serverPort());
 
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
@@ -90,22 +92,31 @@ public class Main {
             "POST /auth/login");    // CT3
 
     /** Cria o Javalin com a configuração de {@link #configure}, sem abrir a porta. */
-    public static Javalin createApp(JwtService jwtService, UserController userController,
-                                    AuthController authController) {
-        return Javalin.create(javalin -> configure(javalin, jwtService, userController, authController));
+    public static Javalin createApp(String corsAllowedOrigin, JwtService jwtService,
+                                    UserController userController, AuthController authController) {
+        return Javalin.create(javalin ->
+                configure(javalin, corsAllowedOrigin, jwtService, userController, authController));
     }
 
     /**
      * Configura JSON, handler de erros, filtros e rotas. Usado pelo main e pelos
      * testes HTTP, que assim cobrem a mesma configuração (e podem acrescentar
      * rotas próprias depois).
+     *
+     * O Javalin roda as fases nesta ordem, qualquer que seja a ordem de registro:
+     * before (CORS) → beforeMatched (token) → rota (ou 404/405) → after.
      */
-    public static void configure(JavalinConfig javalin, JwtService jwtService, UserController userController,
-                                 AuthController authController) {
+    public static void configure(JavalinConfig javalin, String corsAllowedOrigin, JwtService jwtService,
+                                 UserController userController, AuthController authController) {
         javalin.jsonMapper(JsonConfig.jsonMapper());
         // Rota existente com método errado responde 405, não 404.
         javalin.http.prefer405over404 = true;
         ErrorHandler.register(javalin);
+
+        // CORS antes de tudo: responde a pré-requisição OPTIONS (que vem sem token)
+        // e marca a origem permitida em toda resposta, inclusive nos erros.
+        CorsFilter corsFilter = new CorsFilter(corsAllowedOrigin);
+        javalin.routes.before(corsFilter::handle);
 
         // Token: beforeMatched só roda quando a rota existe, então 404 e 405 ficam como estão.
         TokenFilter tokenFilter = new TokenFilter(jwtService, PUBLIC_ROUTES);

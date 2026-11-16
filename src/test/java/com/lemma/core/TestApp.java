@@ -34,6 +34,8 @@ public final class TestApp {
     public static final int JWT_TTL_MINUTES = 240;
     /** Relógio fixo: o token emitido agora vence às 18:30, como no exemplo do CT3. */
     public static final Instant NOW = Instant.parse("2026-10-20T14:30:00Z");
+    /** Origem do Frontend permitida pelo CORS (o valor do .env.example). */
+    public static final String CORS_ORIGIN = "http://localhost:5173";
 
     private static final HttpClient http = HttpClient.newHttpClient();
 
@@ -59,7 +61,7 @@ public final class TestApp {
         UserController userController = new UserController(userService);
         AuthController authController = new AuthController(authService);
         app = Javalin.create(javalin -> {
-            Main.configure(javalin, jwtService, userController, authController);
+            Main.configure(javalin, CORS_ORIGIN, jwtService, userController, authController);
             extraRoutes.accept(javalin);
         }).start(0);
         return this;
