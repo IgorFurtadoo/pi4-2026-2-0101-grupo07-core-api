@@ -2,7 +2,9 @@ package com.lemma.core.controller;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.lemma.core.config.JsonConfig;
+import com.lemma.core.LogCapture;
 import com.lemma.core.exception.ApiException;
+import com.lemma.core.exception.RateLimitExceededException;
 import io.javalin.Javalin;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -13,9 +15,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Sobe um Javalin real numa porta livre com o handler central e rotas que existem
@@ -39,6 +43,9 @@ class ErrorHandlerTest {
             ErrorHandler.register(config);
             config.routes.get("/test/api-error", ctx -> {
                 throw new ApiException(409, "TEST_ERROR", "Mensagem de teste.");
+            });
+            config.routes.get("/test/rate-limit", ctx -> {
+                throw new RateLimitExceededException(7);
             });
             config.routes.get("/test/unexpected", ctx -> {
                 throw new IllegalStateException("detalhe-interno");
@@ -81,6 +88,20 @@ class ErrorHandlerTest {
         assertEquals(409, response.statusCode());
         assertEquals("{\"code\":\"TEST_ERROR\",\"message\":\"Mensagem de teste.\"}", response.body());
         assertEquals("application/json", response.headers().firstValue("Content-Type").orElse(""));
+        assertTrue(response.headers().firstValue("Retry-After").isEmpty(), "só o 429 do limite leva Retry-After");
+    }
+
+    @Test
+    void rateLimitExceededBecomes429WithRetryAfterAndWithoutLog() throws Exception {
+        try (LogCapture logs = new LogCapture(ErrorHandler.class)) {
+            HttpResponse<String> response = get("/test/rate-limit");
+
+            assertEquals(429, response.statusCode());
+            assertEquals("{\"code\":\"RATE_LIMIT_EXCEEDED\","
+                    + "\"message\":\"Muitas requisições. Tente novamente em instantes.\"}", response.body());
+            assertEquals(List.of("7"), response.headers().allValues("Retry-After"));
+            assertEquals("", logs.all());
+        }
     }
 
     @Test

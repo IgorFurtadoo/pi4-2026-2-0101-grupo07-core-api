@@ -8,6 +8,7 @@ import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
 import com.lemma.core.controller.WebhookController;
+import com.lemma.core.ratelimit.SlidingWindowRateLimiter;
 import com.lemma.core.security.JwtService;
 import com.lemma.core.security.PasswordHasher;
 import com.lemma.core.service.AuthService;
@@ -37,7 +38,8 @@ import java.util.function.Consumer;
  * (Main.configure), services reais e dependências falsas: repositories em memória,
  * Blockchain Service falso, External Data Service falso (servidor HTTP do JDK, o
  * mesmo MarketDataClient do Main), bcrypt de custo 4, segredo de JWT e chave de
- * serviço de teste e relógio fixo. Usado pelos testes HTTP.
+ * serviço de teste e relógio fixo. O limite do mercado usa um relógio de teste
+ * próprio (marketClock), que só anda quando o teste manda. Usado pelos testes HTTP.
  */
 public final class TestApp {
 
@@ -50,6 +52,9 @@ public final class TestApp {
     public static final String CORS_ORIGIN = "http://localhost:5173";
     /** Chave de serviço obviamente falsa, só para os testes. */
     public static final String SERVICE_KEY = "chave-de-servico-de-teste-falsa";
+    /** Limite padrão do mercado: alto o bastante para nenhum teste que não seja de limite esbarrar nele. */
+    public static final int DEFAULT_MARKET_RATE_LIMIT_MAX = 1_000;
+    public static final Duration DEFAULT_MARKET_RATE_LIMIT_WINDOW = Duration.ofSeconds(60);
 
     private static final HttpClient http = HttpClient.newHttpClient();
 
@@ -61,8 +66,23 @@ public final class TestApp {
     public final PasswordHasher hasher = new PasswordHasher(4);
     public final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     public final JwtService jwtService = new JwtService(JWT_SECRET, JWT_TTL_MINUTES, clock);
+    /** Relógio do limite do mercado, separado do clock fixo do JWT e das transações. */
+    public final TestClock marketClock = new TestClock(NOW);
 
+    private final int marketRateLimitMax;
+    private final Duration marketRateLimitWindow;
     private Javalin app;
+
+    /** Com o limite padrão do mercado ({@link #DEFAULT_MARKET_RATE_LIMIT_MAX} por 60 s). */
+    public TestApp() {
+        this(DEFAULT_MARKET_RATE_LIMIT_MAX, DEFAULT_MARKET_RATE_LIMIT_WINDOW);
+    }
+
+    /** Com um limite do mercado próprio, para os testes de limite. */
+    public TestApp(int marketRateLimitMax, Duration marketRateLimitWindow) {
+        this.marketRateLimitMax = marketRateLimitMax;
+        this.marketRateLimitWindow = marketRateLimitWindow;
+    }
 
     public TestApp start() {
         return start(javalin -> {
@@ -79,7 +99,8 @@ public final class TestApp {
         WalletService walletService = new WalletService(repository, blockchain);
         TransactionService transactionService = new TransactionService(repository, transactions, blockchain, clock);
         MarketService marketService = new MarketService(
-                new MarketDataClient(marketData.baseUrl(), SERVICE_KEY, Duration.ofSeconds(2)));
+                new MarketDataClient(marketData.baseUrl(), SERVICE_KEY, Duration.ofSeconds(2)),
+                new SlidingWindowRateLimiter(marketRateLimitMax, marketRateLimitWindow, marketClock));
         Main.Controllers controllers = new Main.Controllers(
                 new UserController(userService),
                 new AuthController(authService),

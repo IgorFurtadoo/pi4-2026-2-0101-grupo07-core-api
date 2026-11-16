@@ -7,6 +7,8 @@ import com.lemma.core.client.MarketDataUnavailableException;
 import com.lemma.core.dto.MarketDataResponse;
 import com.lemma.core.dto.PricePointResponse;
 import com.lemma.core.exception.ApiException;
+import com.lemma.core.exception.RateLimitExceededException;
+import com.lemma.core.ratelimit.SlidingWindowRateLimiter;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -14,11 +16,17 @@ import java.util.regex.Pattern;
 /**
  * Dados de mercado (CT17, seção 8.6 do desenho).
  *
- * Ordem: token (TokenFilter) → assetId válido → [limite de requisições, no C8] →
- * CT18 → montar a resposta. assetId fora do formato responde o mesmo 404 do ativo
- * desconhecido, sem chamar o External Data Service.
+ * Ordem: token (TokenFilter) → assetId válido → limite de requisições → CT18 →
+ * montar a resposta. assetId fora do formato responde o mesmo 404 do ativo
+ * desconhecido, sem chamar o External Data Service e sem consumir o limite.
  *
- * Sem log próprio: a falha do CT18 já foi ao log pelo cliente.
+ * O limite é global (protege a cota da CoinGecko, que é da aplicação inteira) e
+ * conta requisições do CT17. A requisição aceita conta mesmo se o External Data
+ * Service falhar (a CoinGecko também conta erros); a recusada responde 429 com
+ * Retry-After e não chama o External Data Service.
+ *
+ * Sem log próprio: a falha do CT18 já foi ao log pelo cliente, e a recusa pelo
+ * limite não vai ao log (seria ruído, e um cliente poderia encher o log).
  */
 public class MarketService {
 
@@ -29,9 +37,11 @@ public class MarketService {
     static final Pattern ASSET_ID_FORMAT = Pattern.compile("^[a-z0-9-]{1,64}$");
 
     private final MarketDataClient marketDataClient;
+    private final SlidingWindowRateLimiter rateLimiter;
 
-    public MarketService(MarketDataClient marketDataClient) {
+    public MarketService(MarketDataClient marketDataClient, SlidingWindowRateLimiter rateLimiter) {
         this.marketDataClient = marketDataClient;
+        this.rateLimiter = rateLimiter;
     }
 
     public MarketDataResponse getMarketData(String assetId) {
@@ -39,7 +49,11 @@ public class MarketService {
             throw assetNotFound();
         }
 
-        // C8: o limite de requisições entra aqui, depois do assetId e antes do CT18 (seção 8.6).
+        // Limite depois do assetId e antes do CT18 (seção 8.6 do desenho).
+        SlidingWindowRateLimiter.Decision decision = rateLimiter.tryAcquire();
+        if (!decision.allowed()) {
+            throw new RateLimitExceededException(decision.retryAfterSeconds());
+        }
 
         MarketData data;
         try {

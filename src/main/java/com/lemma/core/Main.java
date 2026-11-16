@@ -12,6 +12,7 @@ import com.lemma.core.controller.TransactionController;
 import com.lemma.core.controller.UserController;
 import com.lemma.core.controller.WalletController;
 import com.lemma.core.controller.WebhookController;
+import com.lemma.core.ratelimit.SlidingWindowRateLimiter;
 import com.lemma.core.repository.Database;
 import com.lemma.core.repository.EthTransactionRepository;
 import com.lemma.core.repository.UserRepository;
@@ -83,7 +84,9 @@ public class Main {
         WalletService walletService = new WalletService(userRepository, blockchainClient);
         TransactionService transactionService = new TransactionService(userRepository, transactionRepository,
                 blockchainClient, Clock.systemUTC());
-        MarketService marketService = new MarketService(marketDataClient);
+        SlidingWindowRateLimiter marketRateLimiter = new SlidingWindowRateLimiter(config.marketRateLimitMax(),
+                Duration.ofSeconds(config.marketRateLimitWindowSeconds()), Clock.systemUTC());
+        MarketService marketService = new MarketService(marketDataClient, marketRateLimiter);
         Controllers controllers = new Controllers(
                 new UserController(userService),
                 new AuthController(authService),

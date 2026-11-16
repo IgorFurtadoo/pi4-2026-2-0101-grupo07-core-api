@@ -3,6 +3,7 @@ package com.lemma.core.controller;
 import com.fasterxml.jackson.core.JacksonException;
 import com.lemma.core.dto.ErrorResponse;
 import com.lemma.core.exception.ApiException;
+import com.lemma.core.exception.RateLimitExceededException;
 import io.javalin.config.JavalinConfig;
 import io.javalin.http.Context;
 import org.slf4j.Logger;
@@ -11,7 +12,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Handler central de erros, registrado no Main.
  *
- * ApiException vira o status e o código dela; erro do Jackson ao ler o corpo vira
+ * ApiException vira o status e o código dela (o 429 do limite leva também o
+ * Retry-After); erro do Jackson ao ler o corpo vira
  * 400 REQUEST_INVALID; qualquer outra exceção vira 500 INTERNAL_ERROR sem expor
  * detalhe interno ao chamador. Rota inexistente (404)
  * e método errado (405) ficam com a resposta padrão do Javalin, que tem handler
@@ -31,7 +33,11 @@ public final class ErrorHandler {
         config.routes.exception(Exception.class, ErrorHandler::handleUnexpected);
     }
 
+    /** O 429 do limite leva também o Retry-After (ficha CT17). Nenhum dos dois vai ao log. */
     static void handleApiException(ApiException e, Context ctx) {
+        if (e instanceof RateLimitExceededException rateLimit) {
+            ctx.header("Retry-After", String.valueOf(rateLimit.getRetryAfterSeconds()));
+        }
         ctx.status(e.getStatus()).json(new ErrorResponse(e.getCode(), e.getMessage()));
     }
 
