@@ -24,6 +24,8 @@
         <mysql.version>26.10.0</mysql.version>
         <!-- Última versão estável na Maven Central (0.10.2, fev/2023). -->
         <bcrypt.version>0.10.2</bcrypt.version>
+        <!-- Última versão estável na Maven Central (4.6.2, out/2026). -->
+        <jwt.version>4.6.2</jwt.version>
     </properties>
 
     <dependencies>
@@ -61,6 +63,12 @@
             <groupId>at.favre.lib</groupId>
             <artifactId>bcrypt</artifactId>
             <version>${bcrypt.version}</version>
+        </dependency>
+        <!-- Token JWT HS256 (seção 2 do desenho, ADR 0004). Usa o Jackson já declarado acima. -->
+        <dependency>
+            <groupId>com.auth0</groupId>
+            <artifactId>java-jwt</artifactId>
+            <version>${jwt.version}</version>
         </dependency>
         <!-- Implementação do SLF4J (a API do SLF4J vem com o Javalin). -->
         <dependency>
