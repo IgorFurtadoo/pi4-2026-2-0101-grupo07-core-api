@@ -1,6 +1,7 @@
 package com.lemma.core.repository;
 
 import com.lemma.core.config.AppConfig;
+import com.lemma.core.model.EthTransaction;
 import com.lemma.core.model.User;
 import org.hibernate.SessionFactory;
 import org.hibernate.cfg.AvailableSettings;
@@ -26,6 +27,7 @@ public final class Database {
     public static SessionFactory createSessionFactory(AppConfig config) {
         return new Configuration()
                 .addAnnotatedClass(User.class)
+                .addAnnotatedClass(EthTransaction.class)
                 .setProperty(AvailableSettings.JAKARTA_JDBC_URL, config.dbUrl())
                 .setProperty(AvailableSettings.JAKARTA_JDBC_USER, config.dbUser())
                 .setProperty(AvailableSettings.JAKARTA_JDBC_PASSWORD, config.dbPassword())
