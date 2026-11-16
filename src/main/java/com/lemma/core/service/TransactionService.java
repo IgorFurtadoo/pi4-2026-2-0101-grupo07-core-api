@@ -3,10 +3,13 @@ package com.lemma.core.service;
 import com.lemma.core.client.BlockchainClient;
 import com.lemma.core.client.BlockchainRejectedException;
 import com.lemma.core.client.BlockchainUnavailableException;
+import com.lemma.core.client.TaskState;
 import com.lemma.core.dto.SendTransactionRequest;
 import com.lemma.core.dto.SendTransactionResponse;
+import com.lemma.core.dto.TransactionResponse;
 import com.lemma.core.exception.ApiException;
 import com.lemma.core.model.EthTransaction;
+import com.lemma.core.model.FailureReason;
 import com.lemma.core.model.TransactionStatus;
 import com.lemma.core.model.User;
 import com.lemma.core.repository.EthTransactionRepository;
@@ -18,11 +21,13 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * Envio de transação (CT9, seção 8.3 do desenho).
+ * Envio de transação (CT9, seção 8.3 do desenho) e acompanhamento (CT13, seção 8.4).
  *
  * Ordem (E4): validar o corpo → ler o usuário (origem = ethereum_address) → CT10 →
  * gravar eth_transaction PENDING → responder. A origem é sempre a carteira do
@@ -37,6 +42,10 @@ import java.util.regex.Pattern;
  * Sem retentativa do CT10 e sem idempotência (limitação da seção 8.3). Log só nas
  * falhas do banco (a classe da exceção e, depois do CT10, o taskId); nada no
  * sucesso. Endereços e valores nunca vão ao log.
+ *
+ * Acompanhamento: a leitura é sempre por taskId e userId juntos. O estado final é
+ * devolvido sem consultar o Blockchain Service; o PENDING consulta o CT14 e, se
+ * houver novidade, grava pelo applyTaskState, o mesmo caminho do webhook (CT15).
  */
 public class TransactionService {
 
@@ -50,6 +59,9 @@ public class TransactionService {
 
     /** Coluna amount_eth é DECIMAL(38,18): sobram 20 dígitos para a parte inteira. */
     static final int MAX_INTEGER_DIGITS = 20;
+
+    /** taskId: UUID em texto (CHAR(36)). Também protege o caminho do CT14. */
+    static final Pattern TASK_ID_FORMAT = Pattern.compile("^[0-9a-fA-F-]{36}$");
 
     private final UserRepository userRepository;
     private final EthTransactionRepository transactionRepository;
@@ -89,6 +101,102 @@ public class TransactionService {
         save(new EthTransaction(taskId, userId, destinationAddress, amountEth, now));
 
         return new SendTransactionResponse(taskId, TransactionStatus.PENDING.name());
+    }
+
+    /**
+     * CT13: estado da transação do usuário do token.
+     *
+     * taskId fora do formato, inexistente ou de outro usuário: a mesma resposta
+     * 404, sem dizer qual dos casos. O app_user não é lido: um usuário removido
+     * não tem transações (chave estrangeira), então recebe o mesmo 404.
+     *
+     * Estado final: devolvido como está. PENDING: consulta o CT14; se ele falhar,
+     * devolve o estado local sem erro (o cliente já logou); se trouxer novidade,
+     * grava e relê a linha, e a resposta é sempre o que está gravado, nunca o que
+     * o CT14 disse. Sem novidade, nada é gravado (o updatedAt não anda a cada polling).
+     */
+    public TransactionResponse get(long userId, String taskId) {
+        if (taskId == null || !TASK_ID_FORMAT.matcher(taskId).matches()) {
+            throw transactionNotFound();
+        }
+        // O MySQL compara CHAR(36) sem diferença de caixa; aqui vale o mesmo para todos.
+        String normalizedTaskId = taskId.toLowerCase(Locale.ROOT);
+
+        EthTransaction local = findOwned(normalizedTaskId, userId);
+        if (local.getStatus() != TransactionStatus.PENDING) {
+            return toResponse(local);
+        }
+
+        TaskState remote;
+        try {
+            remote = blockchainClient.getTask(normalizedTaskId);
+        } catch (BlockchainUnavailableException e) {
+            // Falha tolerada (CT13): o motivo já foi ao log pelo cliente.
+            return toResponse(local);
+        }
+        if (sameState(local, remote.status(), remote.transactionHash(), remote.failureReason())) {
+            return toResponse(local);
+        }
+
+        applyTaskState(normalizedTaskId, remote.status(), remote.transactionHash(), remote.failureReason());
+        return toResponse(findOwned(normalizedTaskId, userId));
+    }
+
+    /**
+     * Regra de convergência (seção 8.4 do desenho), usada pela consulta ativa
+     * (CT13) e pelo webhook (CT15): uma atualização condicional que só altera a
+     * linha ainda PENDING. updated_at é o relógio do Core API no momento da mudança.
+     *
+     * @return true se a linha mudou; false se ela já estava em estado final (ou não existe)
+     */
+    public boolean applyTaskState(String taskId, TransactionStatus status, String transactionHash,
+                                  FailureReason failureReason) {
+        Instant now = Instant.now(clock).truncatedTo(ChronoUnit.MILLIS);
+        try {
+            return transactionRepository.updateIfPending(taskId, status, transactionHash, failureReason, now) > 0;
+        } catch (RuntimeException e) {
+            log.warn("Atualização da transação: falha no banco ({})", e.getClass().getSimpleName());
+            throw internalError();
+        }
+    }
+
+    /** O estado gravado é igual ao informado? Status, hash (exato) e motivo. */
+    private static boolean sameState(EthTransaction row, TransactionStatus status, String transactionHash,
+                                     FailureReason failureReason) {
+        return row.getStatus() == status
+                && Objects.equals(row.getTransactionHash(), transactionHash)
+                && row.getFailureReason() == failureReason;
+    }
+
+    /** Linha do taskId que pertence ao usuário; senão 404. Falha do banco: 500, só a classe no log. */
+    private EthTransaction findOwned(String taskId, long userId) {
+        Optional<EthTransaction> transaction;
+        try {
+            transaction = transactionRepository.findByTaskIdAndUserId(taskId, userId);
+        } catch (RuntimeException e) {
+            log.warn("Acompanhamento: falha ao consultar o banco ({})", e.getClass().getSimpleName());
+            throw internalError();
+        }
+        return transaction.orElseThrow(TransactionService::transactionNotFound);
+    }
+
+    /**
+     * A entidade nunca sai pelo JSON. amountEth sem zeros à direita (o banco
+     * devolve escala 18) e sem expoente; updatedAt em segundos, ISO 8601 UTC.
+     */
+    private static TransactionResponse toResponse(EthTransaction transaction) {
+        BigDecimal amount = transaction.getAmountEth().stripTrailingZeros();
+        if (amount.scale() < 0) {
+            amount = amount.setScale(0);
+        }
+        return new TransactionResponse(
+                transaction.getTaskId(),
+                transaction.getStatus().name(),
+                transaction.getDestinationAddress(),
+                amount,
+                transaction.getTransactionHash(),
+                transaction.getFailureReason() == null ? null : transaction.getFailureReason().name(),
+                transaction.getUpdatedAt().truncatedTo(ChronoUnit.SECONDS).toString());
     }
 
     /** Destino obrigatório no formato 0x + 40 hexadecimais; volta como o usuário enviou. */
@@ -162,6 +270,11 @@ public class TransactionService {
     private static ApiException amountInvalid() {
         return new ApiException(400, "AMOUNT_INVALID",
                 "Informe um valor maior que zero, com no máximo 18 casas decimais e 20 dígitos inteiros.");
+    }
+
+    /** Inexistente, de outro usuário ou taskId malformado: a mesma resposta. */
+    private static ApiException transactionNotFound() {
+        return new ApiException(404, "TRANSACTION_NOT_FOUND", "Transação não encontrada.");
     }
 
     private static ApiException internalError() {

@@ -1,10 +1,13 @@
 package com.lemma.core.service;
 
 import com.lemma.core.LogCapture;
+import com.lemma.core.client.TaskState;
 import com.lemma.core.dto.SendTransactionRequest;
 import com.lemma.core.dto.SendTransactionResponse;
+import com.lemma.core.dto.TransactionResponse;
 import com.lemma.core.exception.ApiException;
 import com.lemma.core.model.EthTransaction;
+import com.lemma.core.model.FailureReason;
 import com.lemma.core.model.TransactionStatus;
 import com.lemma.core.model.User;
 import org.junit.jupiter.api.BeforeEach;
@@ -299,5 +302,278 @@ class TransactionServiceTest {
         assertEquals(1, blockchain.submissions.size()); // sem retentativa do CT10
         assertEquals(1, transactions.saveCalls);
         assertTrue(transactions.saved.isEmpty());
+    }
+
+    // ==================== CT13 getTransaction ====================
+
+    private static final String TASK = "a3f1c2d4-5b6e-4f70-8a91-0c2d3e4f5a6b";
+    private static final String HASH = "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060";
+    /** Criação da linha, antes do relógio do service (NOW). */
+    private static final Instant CREATED = Instant.parse("2026-10-20T14:30:00.456Z");
+    private static final String NOT_FOUND_MESSAGE = "Transação não encontrada.";
+
+    /** Linha PENDING de ana (usuário 1), com o valor na escala 18, como o banco devolve. */
+    private void saveRow(String taskId, String amount) {
+        transactions.save(new EthTransaction(taskId, 1, DESTINATION, new BigDecimal(amount).setScale(18), CREATED));
+    }
+
+    private void saveRow() {
+        saveRow(TASK, "0.01");
+    }
+
+    private static TransactionResponse response(String status, String hash, String reason, String updatedAt) {
+        return new TransactionResponse(TASK, status, DESTINATION, new BigDecimal("0.01"), hash, reason, updatedAt);
+    }
+
+    private ApiException assertGetRefused(long userId, String taskId, int status, String code, String message) {
+        ApiException e = assertThrows(ApiException.class, () -> service.get(userId, taskId), taskId);
+        assertEquals(status, e.getStatus(), taskId);
+        assertEquals(code, e.getCode(), taskId);
+        assertEquals(message, e.getMessage(), taskId);
+        return e;
+    }
+
+    // ---------- leitura ----------
+
+    @Test
+    void finalStatesAreReturnedWithoutCallingCt14() {
+        saveRow();
+        transactions.setState(TASK, TransactionStatus.CONFIRMED, HASH, null, CREATED);
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertEquals(response("CONFIRMED", HASH, null, "2026-10-20T14:30:00Z"), service.get(1, TASK));
+
+            transactions.setState(TASK, TransactionStatus.FAILED, null, FailureReason.REJECTED_BY_NETWORK, CREATED);
+            assertEquals(response("FAILED", null, "REJECTED_BY_NETWORK", "2026-10-20T14:30:00Z"),
+                    service.get(1, TASK));
+
+            assertEquals(0, logs.lines().size());
+        }
+        assertTrue(blockchain.taskQueries.isEmpty());
+        assertEquals(0, transactions.updateCalls);
+    }
+
+    @Test
+    void otherUsersAndUnknownTransactionsGetTheSame404() {
+        saveRow();
+
+        ApiException otherUser = assertGetRefused(2, TASK, 404, "TRANSACTION_NOT_FOUND", NOT_FOUND_MESSAGE);
+        ApiException unknown = assertGetRefused(1, "b4e2d3c5-6c7f-4a81-9ba2-1d3e4f5a6b7c", 404,
+                "TRANSACTION_NOT_FOUND", NOT_FOUND_MESSAGE);
+
+        assertEquals(otherUser.getMessage(), unknown.getMessage());
+        assertTrue(blockchain.taskQueries.isEmpty());
+    }
+
+    @Test
+    void malformedTaskIdIs404WithoutReadingTheDatabase() {
+        transactions.failOnFind = new IllegalStateException("o banco não devia ser lido");
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            for (String taskId : Arrays.asList(null, "", "abc", TASK + "0", TASK.substring(1),
+                    TASK.substring(1) + "/", TASK.substring(1) + "g", "../../wallets/aaaaaaaaaaaaaaaaaaaaa")) {
+                assertGetRefused(1, taskId, 404, "TRANSACTION_NOT_FOUND", NOT_FOUND_MESSAGE);
+            }
+            assertEquals(0, logs.lines().size());
+        }
+        assertEquals(0, transactions.findCalls);
+        assertTrue(blockchain.taskQueries.isEmpty());
+    }
+
+    @Test
+    void uppercaseTaskIdFindsTheOwnRowAndCt14GetsItInLowercase() {
+        saveRow();
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.PENDING, null, null));
+
+        TransactionResponse response = service.get(1, TASK.toUpperCase());
+
+        assertEquals(TASK, response.taskId());
+        assertEquals(List.of(TASK), blockchain.taskQueries);
+    }
+
+    @Test
+    void databaseFailureIs500AndLogsTheClassOnly() {
+        saveRow();
+        transactions.failOnFind = new IllegalStateException("jdbc:mysql://core-db " + TASK + " detalhe-do-banco");
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            ApiException e = assertGetRefused(1, TASK, 500, "INTERNAL_ERROR", "Erro interno.");
+
+            assertEquals("WARN Acompanhamento: falha ao consultar o banco (IllegalStateException)", logs.all());
+            assertFalse(e.getMessage().contains("detalhe-do-banco"));
+        }
+        assertTrue(blockchain.taskQueries.isEmpty());
+    }
+
+    // ---------- PENDING: consulta ativa (CT14) ----------
+
+    @Test
+    void pendingWithCt14ConfirmedSavesAndReturnsTheSavedRow() {
+        saveRow();
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.CONFIRMED, HASH, null));
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertEquals(response("CONFIRMED", HASH, null, "2026-10-20T14:35:00Z"), service.get(1, TASK));
+            assertEquals(0, logs.lines().size());
+        }
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.CONFIRMED, row.getStatus());
+        assertEquals(HASH, row.getTransactionHash());
+        assertNull(row.getFailureReason());
+        assertEquals(NOW_MILLIS, row.getUpdatedAt());
+        assertEquals(CREATED, row.getCreatedAt());
+        assertEquals(1, transactions.updateCalls);
+    }
+
+    @Test
+    void pendingWithCt14FailedWithoutHashSavesAndReturns() {
+        saveRow();
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.FAILED, null, FailureReason.REJECTED_BY_NETWORK));
+
+        assertEquals(response("FAILED", null, "REJECTED_BY_NETWORK", "2026-10-20T14:35:00Z"), service.get(1, TASK));
+
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.FAILED, row.getStatus());
+        assertNull(row.getTransactionHash());
+        assertEquals(FailureReason.REJECTED_BY_NETWORK, row.getFailureReason());
+        assertEquals(NOW_MILLIS, row.getUpdatedAt());
+    }
+
+    @Test
+    void hashThatAppearsWhileStillPendingIsSaved() {
+        saveRow();
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.PENDING, HASH, null));
+
+        assertEquals(response("PENDING", HASH, null, "2026-10-20T14:35:00Z"), service.get(1, TASK));
+
+        assertEquals(HASH, transactions.row(TASK).getTransactionHash());
+        assertEquals(TransactionStatus.PENDING, transactions.row(TASK).getStatus());
+        assertEquals(1, transactions.updateCalls);
+    }
+
+    @Test
+    void hashThatDisappearsWhileStillPendingIsCleared() {
+        saveRow();
+        transactions.setState(TASK, TransactionStatus.PENDING, HASH, null, CREATED);
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.PENDING, null, null));
+
+        assertEquals(response("PENDING", null, null, "2026-10-20T14:35:00Z"), service.get(1, TASK));
+
+        assertNull(transactions.row(TASK).getTransactionHash());
+    }
+
+    @Test
+    void sameStateFromCt14WritesNothing() {
+        saveRow();
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.PENDING, null, null));
+
+        assertEquals(response("PENDING", null, null, "2026-10-20T14:30:00Z"), service.get(1, TASK));
+        assertEquals(response("PENDING", null, null, "2026-10-20T14:30:00Z"), service.get(1, TASK));
+
+        // Com o hash já gravado, o mesmo hash também não é novidade.
+        transactions.setState(TASK, TransactionStatus.PENDING, HASH, null, CREATED);
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.PENDING, HASH, null));
+        assertEquals(response("PENDING", HASH, null, "2026-10-20T14:30:00Z"), service.get(1, TASK));
+
+        assertEquals(0, transactions.updateCalls);
+        assertEquals(CREATED, transactions.row(TASK).getUpdatedAt());
+        assertEquals(3, blockchain.taskQueries.size());
+    }
+
+    @Test
+    void ct14FailureReturnsTheLocalStateWithoutErrorAndWithoutLog() {
+        saveRow();
+        blockchain.failGetTask = true;
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertEquals(response("PENDING", null, null, "2026-10-20T14:30:00Z"), service.get(1, TASK));
+            assertEquals(0, logs.lines().size()); // o cliente já logou
+        }
+        assertEquals(0, transactions.updateCalls);
+        assertEquals(List.of(TASK), blockchain.taskQueries);
+    }
+
+    @Test
+    void ct14UnknownTaskReturnsTheLocalState() {
+        saveRow(); // o falso não conhece a task: como o 404 TASK_NOT_FOUND
+
+        assertEquals(response("PENDING", null, null, "2026-10-20T14:30:00Z"), service.get(1, TASK));
+        assertEquals(0, transactions.updateCalls);
+    }
+
+    @Test
+    void finalStateNeverRegressesWhenTheWebhookWinsDuringCt14() {
+        saveRow();
+        // O webhook grava CONFIRMED enquanto o CT14 está em andamento; o CT14 traz FAILED.
+        blockchain.onGetTask = () -> transactions.setState(TASK, TransactionStatus.CONFIRMED, HASH, null,
+                CREATED.plusSeconds(5));
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.FAILED, null, FailureReason.INTERNAL_ERROR));
+
+        assertEquals(response("CONFIRMED", HASH, null, "2026-10-20T14:30:05Z"), service.get(1, TASK));
+
+        EthTransaction row = transactions.row(TASK);
+        assertEquals(TransactionStatus.CONFIRMED, row.getStatus());
+        assertEquals(HASH, row.getTransactionHash());
+        assertNull(row.getFailureReason());
+        assertEquals(1, transactions.updateCalls); // tentou, e a condição PENDING não deixou
+    }
+
+    @Test
+    void updateFailureIs500AndLogsTheClassOnly() {
+        saveRow();
+        blockchain.tasks.put(TASK, new TaskState(TransactionStatus.CONFIRMED, HASH, null));
+        transactions.failOnUpdate = new IllegalStateException("jdbc:mysql://core-db detalhe-do-banco");
+
+        try (LogCapture logs = new LogCapture(TransactionService.class)) {
+            assertGetRefused(1, TASK, 500, "INTERNAL_ERROR", "Erro interno.");
+            assertEquals("WARN Atualização da transação: falha no banco (IllegalStateException)", logs.all());
+        }
+    }
+
+    @Test
+    void applyTaskStateChangesOnlyPendingRows() {
+        saveRow();
+
+        assertTrue(service.applyTaskState(TASK, TransactionStatus.CONFIRMED, HASH, null));
+        assertFalse(service.applyTaskState(TASK, TransactionStatus.FAILED, null, FailureReason.INTERNAL_ERROR));
+        assertFalse(service.applyTaskState("b4e2d3c5-6c7f-4a81-9ba2-1d3e4f5a6b7c",
+                TransactionStatus.CONFIRMED, HASH, null));
+
+        assertEquals(TransactionStatus.CONFIRMED, transactions.row(TASK).getStatus());
+        assertEquals(NOW_MILLIS, transactions.row(TASK).getUpdatedAt());
+    }
+
+    // ---------- formato da resposta ----------
+
+    @Test
+    void amountIsReturnedWithoutTrailingZerosAndWithoutExponent() {
+        record Case(String taskId, String amount) {
+        }
+        List<Case> cases = List.of(
+                new Case("00000000-0000-4000-8000-000000000001", "0.01"),
+                new Case("00000000-0000-4000-8000-000000000002", "100"),
+                new Case("00000000-0000-4000-8000-000000000003", "0.000000000000000001"),
+                new Case("00000000-0000-4000-8000-000000000004", "12345678901234567890.123456789012345678"));
+
+        for (Case c : cases) {
+            saveRow(c.taskId(), c.amount());
+            transactions.setState(c.taskId(), TransactionStatus.CONFIRMED, HASH, null, CREATED);
+
+            BigDecimal amount = service.get(1, c.taskId()).amountEth();
+
+            assertEquals(c.amount(), amount.toPlainString(), c.amount());
+            assertTrue(amount.scale() >= 0, c.amount());
+        }
+    }
+
+    @Test
+    void optionalFieldsAreNullWhenAbsent() {
+        saveRow();
+        blockchain.failGetTask = true;
+
+        TransactionResponse response = service.get(1, TASK);
+
+        assertNull(response.transactionHash());
+        assertNull(response.failureReason());
     }
 }
