@@ -395,6 +395,24 @@ Rodadas de 16/11/2026, com o Blockchain Service real na rede `lemma-dev` (`CORE_
 - **Linhas sintéticas não exercitam a escrita pelo `GET`:** o CT14 responde 404 `TASK_NOT_FOUND` para elas, então ali a corrida de escrita é só entre webhooks.
 - **Dados de teste ficam no banco:** usuários `c9-teste-…@example.com` (`userId` 19 a 23) e as linhas sintéticas do usuário 21.
 
+### 11.3 Histórico da carteira contra o External Data Service real (C10, H08.4)
+
+Feito em 19/11/2026, com o `core-api` reconstruído e o External Data Service real na `lemma-dev`, ligado ao Blockscout público. O Blockchain Service não participa. Roteiro manual de uma vez (fora do repositório), com senha e token só em variável de shell.
+
+| # | O que | Resultado |
+|---|---|---|
+| 1 | Cadastro e login de `c10-1795059062@example.com` | 201 (`userId` 38) e 200 |
+| 2 | `GET /wallet/transactions` do usuário novo | 200 `{"ethereumAddress":"0x32D37f…Ca24","network":"SEPOLIA","transactions":[]}` |
+| 3 | `GET` sem token | 401 `TOKEN_INVALID` |
+| 4 | No `core-db`, só a linha do usuário 38 recebe o endereço público da carteira de demonstração (`0xbdd26d8f…acd5`), para **ler** o histórico dela; antes, conferido que nenhum outro `app_user` tinha esse endereço | 1 linha alterada |
+| 5 | `GET /wallet/transactions` | 200 com 13 transações, todas com campos válidos (8 SENT, 5 RECEIVED; 12 CONFIRMED, 1 FAILED); `amountEth` como número JSON em notação plana (a mais recente: `0.0005`) |
+| 6 | Restauração do endereço original (também no `trap EXIT` do roteiro) e conferência por `SELECT` | usuário 38 de volta ao `0x32D37f…Ca24`; nenhum `app_user` com o endereço de demonstração |
+| 7 | 502: `core-api` temporário (`docker compose run`, porta 18080) com `EXTERNAL_DATA_SERVICE_URL` apontando para um host inexistente | 502 `HISTORY_UNAVAILABLE`; log `CT24 fetchAddressTransactions: falha de rede (ConnectException)`; container removido no fim |
+
+Gasto: 2 requisições do Core API ao External Data Service (passos 2 e 5), portanto no máximo 2 ao Blockscout (o cache de 12 s pode ter atendido a segunda). Nenhuma escrita pela carteira de demonstração. O usuário `c10-…` (`userId` 38) fica no banco, com o próprio endereço.
+
+Só em teste automatizado (não provado contra o real): usuário removido, tempo esgotado, corpo fora do formato, 400/401/429/5xx vindos do CT24 e a lista com 20 itens.
+
 ## 12. Divergências e decisões
 
 ### Mudanças que tocam contratos já escritos
@@ -456,6 +474,6 @@ Um passo por card do OpenProject, um commit por mudança coerente, todos com `OP
 | C7 | Mercado: `GET /market/{assetId}` contra o External Data Service falso | `MarketService`, `MarketController`, `MarketDataClient` | H06.2 (#880) | Resposta do CT17 montada a partir do falso; 404 para `assetId` ruim sem chamar o falso; 502 quando o falso falha |
 | C8 | Rate limiting do mercado | `SlidingWindowRateLimiter` | H10.1 (#882) | Teste automatizado: as requisições além do limite recebem 429 com `Retry-After` e o falso não as vê |
 | C9 | Integração com o Blockchain Service real: webhook, roteiro ponta a ponta, teste do `UPDATE` condicional no MySQL | `scripts/e2e-demo.sh` | H07.2 (#884) e H04.4 (#1317, parte) | Cadastrar, entrar, abastecer na torneira, enviar e ver `CONFIRMED` pelo Core API, com o webhook chegando; o roteiro vale também para o estado final por consulta ativa (derrubando o webhook). **Feito em 16/11/2026 (seções 11.1 e 11.2).** Ajuste decidido pelo responsável do módulo (Igor): o abastecimento é pela carteira de demonstração, não pela torneira, e o caminho da consulta ativa é exercitado sem derrubar o webhook, pelo webhook do abastecimento que recebe 404 antes de a linha existir |
-| C10 | Histórico da carteira: `GET /wallet/transactions` (CT26), repassando o CT24 do External Data Service | `AddressHistoryClient`, `WalletService.getTransactions`, `WalletController.transactions` | H08.4 (#1406) | Testes automatizados: corpo exato com valor exato, lista vazia, 401 sem token e para usuário removido, endereço do token e não da entrada, `X-Service-Key` enviada, 502 `HISTORY_UNAVAILABLE` para cada falha do External Data Service e para corpo fora do formato. Prova real: lista vazia para usuário novo, lista real da carteira de demonstração pelo Core API, 401 sem token e 502 com o External Data Service inalcançável |
+| C10 | Histórico da carteira: `GET /wallet/transactions` (CT26), repassando o CT24 do External Data Service | `AddressHistoryClient`, `WalletService.getTransactions`, `WalletController.transactions` | H08.4 (#1406) | Testes automatizados: corpo exato com valor exato, lista vazia, 401 sem token e para usuário removido, endereço do token e não da entrada, `X-Service-Key` enviada, 502 `HISTORY_UNAVAILABLE` para cada falha do External Data Service e para corpo fora do formato. Prova real: lista vazia para usuário novo, lista real da carteira de demonstração pelo Core API, 401 sem token e 502 com o External Data Service inalcançável. **Feito em 19/11/2026 (seção 11.3).** |
 
 Dependências: C1 antes de todos; C3 antes de C4 a C8 (precisam do token); C5 antes de C6; C7 e C8 só precisam de C3 e do servidor falso (não dependem de Blockchain Service nem do Lucas); C9 depende de C1 a C6; C10 depende de C3 e do CT24 do External Data Service. A **ligação com o External Data Service real** fica fora desta lista: depende do módulo do Lucas existir (H06.1 #879) e entra no teste de carga H10.2 (#889).

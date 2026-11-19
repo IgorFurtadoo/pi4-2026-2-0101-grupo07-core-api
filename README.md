@@ -34,3 +34,11 @@ Pré-requisitos: `core-api` e `core-db` no ar (`docker compose up -d`) e o Block
 | `DEMO_WALLET_ADDRESS=0x... scripts/e2e-demo.sh` | Cadastro, login, saldo, abastecimento, recuperação pela consulta ativa, envio com `CONFIRMED` gravado pelo webhook e envio com `GET` em paralelo | 0.003 ETH da demonstração para o usuário e 2 envios de 0.0005 de volta; gás de ~250 mil unidades no total | 2 a 5 min |
 
 Variáveis do `e2e-demo.sh`: `DEMO_WALLET_ADDRESS` (obrigatória), `CORE_API_URL` (padrão `http://127.0.0.1:8080`), `FUND_ETH` (0.003, no máximo 0.005), `SEND_ETH` (0.0005, no máximo 0.0005), `CONFIRM_TIMEOUT_SECONDS` (180), `RACE_LOOPS` (8), `RACE_INTERVAL` (0.1). Do `concurrency-update-if-pending.sh`: `ROWS` (10) e `ROUNDS` (5). Os dois aceitam `CORE_API_CONTAINER` e `CORE_DB_CONTAINER`; o `e2e-demo.sh` também `BLOCKCHAIN_CONTAINER`. Cada passo é impresso, e qualquer falha encerra com código 1. Resultados em `docs/desenho-core-api.md`, seções 11.1 e 11.2.
+
+## Histórico da carteira
+
+`GET /wallet/transactions` (ficha `docs/contratos/CT26-getWalletTransactions.md`) devolve as até 20 transações mais recentes da carteira do usuário do token, lidas do Blockscout público pelo External Data Service (CT24). O endereço vem sempre do usuário do token. Só aparecem transações já mineradas; um envio `PENDING` continua em `GET /transactions/{taskId}`.
+
+- Pré-requisito: o External Data Service no ar na rede `lemma-dev`, com a mesma `SERVICE_KEY`, em `EXTERNAL_DATA_SERVICE_URL`. Sem ele, a rota responde 502 `HISTORY_UNAVAILABLE` e o resto do Core API segue funcionando.
+- Sem rate limiting no Core API: o External Data Service guarda o histórico por endereço durante 12 s.
+- Prova contra o External Data Service real: `docs/desenho-core-api.md`, seção 11.3.

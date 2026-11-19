@@ -76,3 +76,12 @@ Nota (H08.4, decidida pelo responsável do módulo):
 - **amountEth:** é um número JSON (não texto) em notação plana, sem expoente, com o valor exato recebido do CT24 (por exemplo `0.000000000000000001`, nunca `1E-18`). Mesmo tipo do `balanceEth` do CT6 e do `amountEth` do CT13: o mesmo nome de campo não muda de tipo entre rotas do Core API, e o Frontend já lê esses campos pelo texto exato do número (reviver do `JSON.parse`). Limitação: um navegador sem acesso ao texto do número no reviver vê o valor arredondado, como no saldo. O CT24 manda texto; o Core API converte por `BigDecimal`, sem `double`.
 - **timestamp:** ISO 8601 UTC, normalizado por `Instant.toString()` (por exemplo `2026-11-16T04:12:00Z`).
 - **Sem rate limiting:** o limite do CT17 protege a cota da CoinGecko, que não está em jogo aqui. O Blockscout público aceita 180 requisições por minuto, e o External Data Service guarda o resultado por endereço durante 12 s (`HISTORY_CACHE_SECONDS`).
+
+## Nota [Verificado em 19/11/2026]
+
+Conferido com o Core API e o External Data Service no Docker, ligado ao Blockscout real, por `curl` (seção 11.3 do desenho):
+
+- **Usuário novo:** HTTP 200 `{"ethereumAddress":"…","network":"SEPOLIA","transactions":[]}`.
+- **Carteira de demonstração** (endereço posto, só para leitura, no `app_user` de um usuário de teste e restaurado em seguida): HTTP 200 com uma lista não vazia, todos os itens com campos válidos e `amountEth` como número JSON em notação plana.
+- **Sem token:** HTTP 401 TOKEN_INVALID.
+- **External Data Service inalcançável** (`core-api` temporário com `EXTERNAL_DATA_SERVICE_URL` para um host inexistente): HTTP 502 HISTORY_UNAVAILABLE, com log `CT24 fetchAddressTransactions: falha de rede (ConnectException)`.
