@@ -1,13 +1,19 @@
 package com.lemma.core.service;
 
 import com.lemma.core.LogCapture;
+import com.lemma.core.client.AddressHistoryClient;
+import com.lemma.core.client.FakeExternalDataService;
 import com.lemma.core.dto.BalanceResponse;
+import com.lemma.core.dto.WalletTransactionResponse;
+import com.lemma.core.dto.WalletTransactionsResponse;
 import com.lemma.core.exception.ApiException;
 import com.lemma.core.model.User;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -17,8 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * WalletService com repositório em memória e Blockchain Service falso, sem rede
- * nem banco. Dois usuários gravados: o 1 (ana) e o 2 (bia), cada um com a sua carteira.
+ * WalletService com repositório em memória, Blockchain Service falso e External
+ * Data Service falso (servidor HTTP local do JDK), sem rede externa nem banco. Dois
+ * usuários gravados: o 1 (ana) e o 2 (bia), cada um com a sua carteira.
  */
 class WalletServiceTest {
 
@@ -28,7 +35,10 @@ class WalletServiceTest {
 
     private final InMemoryUserRepository repository = new InMemoryUserRepository();
     private final FakeBlockchainClient blockchain = new FakeBlockchainClient();
-    private final WalletService service = new WalletService(repository, blockchain);
+    private static final String SERVICE_KEY = "chave-de-servico-de-teste-falsa";
+    private final FakeExternalDataService externalData = new FakeExternalDataService(SERVICE_KEY);
+    private final WalletService service = new WalletService(repository, blockchain,
+            new AddressHistoryClient(externalData.baseUrl(), SERVICE_KEY, Duration.ofSeconds(2)));
 
     @BeforeEach
     void saveUsers() {
@@ -36,6 +46,11 @@ class WalletServiceTest {
         repository.save(new User("bia@example.com", "hash-falso-2", BIA_ADDRESS, NOW));
         blockchain.balances.put(ANA_ADDRESS, new BigDecimal("0.000000000000000001"));
         blockchain.balances.put(BIA_ADDRESS, new BigDecimal("7.5"));
+    }
+
+    @AfterEach
+    void stopFake() {
+        externalData.close();
     }
 
     // ---------- sucesso ----------
@@ -131,5 +146,77 @@ class WalletServiceTest {
         ApiException e = assertThrows(ApiException.class, () -> service.getBalance(1));
 
         assertEquals("Erro interno.", e.getMessage());
+    }
+
+    // ==================== histórico (CT26) ====================
+
+    @Test
+    void historyReturnsTheItemsOfTheTokenUsersWalletExactlyAndInOrder() {
+        externalData.reply(200, FakeExternalDataService.historyBody(BIA_ADDRESS.toLowerCase(), "["
+                + FakeExternalDataService.historyItem(1, "0.000000000000000001") + ","
+                + "{\"hash\":\"" + FakeExternalDataService.hash(2) + "\",\"direction\":\"SENT\","
+                + "\"counterpartyAddress\":null,\"amountEth\":\"0.50\","
+                + "\"timestamp\":\"2026-11-15T10:00:00.000000Z\",\"status\":\"FAILED\"}]"));
+
+        WalletTransactionsResponse response = service.getTransactions(2);
+
+        // O endereço da resposta é o do app_user, não o devolvido pelo CT24.
+        assertEquals(new WalletTransactionsResponse(BIA_ADDRESS, "SEPOLIA", List.of(
+                new WalletTransactionResponse(FakeExternalDataService.hash(1), "RECEIVED",
+                        FakeExternalDataService.COUNTERPARTY, new BigDecimal("0.000000000000000001"),
+                        "2026-11-16T04:12:00Z", "CONFIRMED"),
+                new WalletTransactionResponse(FakeExternalDataService.hash(2), "SENT", null,
+                        new BigDecimal("0.50"), "2026-11-15T10:00:00Z", "FAILED"))), response);
+    }
+
+    @Test
+    void historyQueriesCt24WithTheAddressOfTheTokenUserOnly() {
+        externalData.reply(200, FakeExternalDataService.historyBody(BIA_ADDRESS, "[]"));
+
+        assertEquals(List.of(), service.getTransactions(2).transactions());
+
+        assertEquals(1, externalData.requests().size());
+        assertEquals("/addresses/" + BIA_ADDRESS + "/transactions", externalData.requests().get(0).rawPath());
+        assertTrue(externalData.requests().get(0).serviceKeyOk());
+        assertTrue(blockchain.balanceQueries.isEmpty());
+    }
+
+    @Test
+    void historyOfUnknownUserIs401TokenInvalidWithoutCallingCt24() {
+        ApiException e = assertThrows(ApiException.class, () -> service.getTransactions(99));
+
+        assertEquals(401, e.getStatus());
+        assertEquals("TOKEN_INVALID", e.getCode());
+        assertEquals(ApiException.tokenInvalid().getMessage(), e.getMessage());
+        assertTrue(externalData.requests().isEmpty());
+    }
+
+    @Test
+    void ct24FailureIs502HistoryUnavailableAndIsNotLoggedAgainByTheService() {
+        externalData.reply(502, "{\"code\":\"HISTORY_UNAVAILABLE\",\"message\":\"x\"}");
+
+        try (LogCapture logs = new LogCapture(WalletService.class)) {
+            ApiException e = assertThrows(ApiException.class, () -> service.getTransactions(1));
+
+            assertEquals(502, e.getStatus());
+            assertEquals("HISTORY_UNAVAILABLE", e.getCode());
+            assertEquals("Não foi possível obter o histórico agora. Tente novamente.", e.getMessage());
+            assertEquals(0, logs.lines().size());
+        }
+    }
+
+    @Test
+    void historyDatabaseFailureIs500AndOnlyTheExceptionClassIsLogged() {
+        repository.failOnFindById = new IllegalStateException("jdbc:mysql://core-db ana@example.com detalhe-do-banco");
+
+        try (LogCapture logs = new LogCapture(WalletService.class)) {
+            ApiException e = assertThrows(ApiException.class, () -> service.getTransactions(1));
+
+            assertEquals(500, e.getStatus());
+            assertEquals("INTERNAL_ERROR", e.getCode());
+            assertEquals("Erro interno.", e.getMessage());
+            assertEquals("WARN Histórico: falha ao consultar o banco (IllegalStateException)", logs.all());
+        }
+        assertTrue(externalData.requests().isEmpty());
     }
 }

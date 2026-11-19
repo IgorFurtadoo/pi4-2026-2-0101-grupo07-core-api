@@ -21,6 +21,7 @@ O Core API é o ponto único de contato do Frontend. Ele:
 5. Aceita pedidos de envio e guarda a cópia local da transação. [Contrato: CT9, CT10, CT12]
 6. Responde ao polling do Frontend e mantém a cópia local em dia: pelo webhook e pela consulta ativa. [Contrato: CT13, CT14, CT15, P4]
 7. Devolve preço e série de mercado, com rate limiting. [Contrato: CT17, CT18, P5]
+8. Devolve o histórico da carteira do usuário, lido da blockchain pelo External Data Service (passo C10, fora da Especificação). [Contrato: CT26, CT24]
 
 Ele **não**: fala com a Ethereum, guarda chave privada, chama a CoinGecko, nem decide o estado de uma transação (quem decide é o Blockchain Service; o Core API guarda uma cópia).
 
@@ -180,6 +181,7 @@ CREATE TABLE eth_transaction (
 | CT13 `getTransaction` | `GET /transactions/{taskId}` | token | 200 `{taskId, status, destinationAddress, amountEth, transactionHash?, failureReason?, updatedAt}` |
 | CT15 `notifyTaskCompleted` | `POST /webhooks/tasks` | `X-Service-Key` | 204 sem corpo |
 | CT17 `getMarketData` | `GET /market/{assetId}` | token | 200 `{assetId, currency, currentPrice, series}` |
+| CT26 `getWalletTransactions` | `GET /wallet/transactions` | token | 200 `{ethereumAddress, network, transactions}` |
 
 Três grupos de rota, e cada um tem o seu filtro [Sugestão]:
 - **Públicas:** `POST /users` e `POST /auth/login`.
@@ -215,9 +217,11 @@ Regra única de tradução de erros [Sugestão]: qualquer resposta que não seja
 
 O log traz só o contrato chamado e o `code` ou status devolvido (nunca o corpo, a `X-Service-Key` ou a URL). Um `SERVICE_KEY_INVALID` ou `WALLET_NOT_FOUND` vindo do Blockchain Service é erro de configuração ou de dado: vira o mesmo 502 para o usuário, mas com `ERROR` no log.
 
-### 7.2 External Data Service (`MarketDataClient`)
+### 7.2 External Data Service (`MarketDataClient` e `AddressHistoryClient`)
 
 `GET {EXTERNAL_DATA_SERVICE_URL}/market-data/{assetId}` (CT18), com `X-Service-Key`. Resposta 404 `ASSET_NOT_FOUND` → 404 igual; qualquer outra falha → 502 `MARKET_DATA_UNAVAILABLE`. O módulo ainda não tem responsável nem código: o Core API é desenvolvido contra um servidor falso (seção 11) e só se liga ao real depois.
+
+Histórico da carteira (passo C10): `GET {EXTERNAL_DATA_SERVICE_URL}/addresses/{ethereumAddress}/transactions` (CT24), com `X-Service-Key`, pelo `AddressHistoryClient`: classe própria, no mesmo padrão do `MarketDataClient` (conexão de 3 s, resposta de `EXTERNAL_DATA_TIMEOUT_SECONDS`, uma tentativa), sem mexer no cliente do mercado. O endereço é o do `app_user` do token, como no saldo. Qualquer falha (status diferente de 200, tempo esgotado, corpo fora do formato) → 502 `HISTORY_UNAVAILABLE`; nunca lista parcial. Sem rate limiting no Core API: o External Data Service guarda o histórico por endereço durante 12 s, e o Blockscout aceita 180 requisições por minuto. Regras completas na ficha CT26.
 
 ## 8. Fluxos que exigem decisão
 
@@ -326,6 +330,7 @@ Ordem [Contrato: E6, E7]: token → `assetId` válido → **limite** → CT18.
 | Blockchain Service falhou (saldo, envio) | 502 | BLOCKCHAIN_UNAVAILABLE |
 | Blockchain Service falhou ao criar a carteira (cadastro) | 502 | WALLET_UNAVAILABLE |
 | External Data Service ou CoinGecko falhou | 502 | MARKET_DATA_UNAVAILABLE |
+| External Data Service ou Blockscout falhou (histórico, CT26) | 502 | HISTORY_UNAVAILABLE |
 | Qualquer outra falha, incluindo banco fora | 500 | INTERNAL_ERROR |
 
 Rotas inexistentes: 404 e 405 com o corpo padrão do Javalin, como no Blockchain Service.
@@ -411,6 +416,7 @@ Rodadas de 16/11/2026, com o Blockchain Service real na rede `lemma-dev` (`CORE_
 3. **P5:** o limite de 30 chamadas por minuto da CoinGecko não bate com a documentação atual (100 por minuto no plano Demo, mais a cota de 10.000 créditos por mês). O limite do Core API é configuração e parte do mais conservador; atualizar o texto da P5.
 4. **P1:** passa a valer "todas as rotas do Frontend exigem token, exceto cadastro e login"; o webhook usa `X-Service-Key`.
 5. **Abastecimento da carteira do usuário (C9, H04.4):** a Especificação fala em abastecer na torneira; o roteiro abastece cada usuário de teste pela carteira de demonstração do Blockchain Service (CT10 direto), e só a carteira de demonstração é abastecida na torneira PoW. Decidida pelo responsável do módulo (Igor) em 16/11/2026 (seção 11.1).
+6. **Histórico da carteira (C10, H08.4):** a Especificação não tem histórico e descreve o External Data Service como integração de APIs externas de mercado. O Core API passa a ter `GET /wallet/transactions` (ficha nova CT26), que repassa o histórico lido do Blockscout pelo External Data Service (CT24). Decidido pelo responsável do módulo em 18/11/2026 (`desenho-frontend.md`, seção 7, opção D).
 
 ### Decisões confirmadas pelo Igor em 15/11/2026 [Decidido]
 
@@ -450,5 +456,6 @@ Um passo por card do OpenProject, um commit por mudança coerente, todos com `OP
 | C7 | Mercado: `GET /market/{assetId}` contra o External Data Service falso | `MarketService`, `MarketController`, `MarketDataClient` | H06.2 (#880) | Resposta do CT17 montada a partir do falso; 404 para `assetId` ruim sem chamar o falso; 502 quando o falso falha |
 | C8 | Rate limiting do mercado | `SlidingWindowRateLimiter` | H10.1 (#882) | Teste automatizado: as requisições além do limite recebem 429 com `Retry-After` e o falso não as vê |
 | C9 | Integração com o Blockchain Service real: webhook, roteiro ponta a ponta, teste do `UPDATE` condicional no MySQL | `scripts/e2e-demo.sh` | H07.2 (#884) e H04.4 (#1317, parte) | Cadastrar, entrar, abastecer na torneira, enviar e ver `CONFIRMED` pelo Core API, com o webhook chegando; o roteiro vale também para o estado final por consulta ativa (derrubando o webhook). **Feito em 16/11/2026 (seções 11.1 e 11.2).** Ajuste decidido pelo responsável do módulo (Igor): o abastecimento é pela carteira de demonstração, não pela torneira, e o caminho da consulta ativa é exercitado sem derrubar o webhook, pelo webhook do abastecimento que recebe 404 antes de a linha existir |
+| C10 | Histórico da carteira: `GET /wallet/transactions` (CT26), repassando o CT24 do External Data Service | `AddressHistoryClient`, `WalletService.getTransactions`, `WalletController.transactions` | H08.4 (#1406) | Testes automatizados: corpo exato com valor exato, lista vazia, 401 sem token e para usuário removido, endereço do token e não da entrada, `X-Service-Key` enviada, 502 `HISTORY_UNAVAILABLE` para cada falha do External Data Service e para corpo fora do formato. Prova real: lista vazia para usuário novo, lista real da carteira de demonstração pelo Core API, 401 sem token e 502 com o External Data Service inalcançável |
 
-Dependências: C1 antes de todos; C3 antes de C4 a C8 (precisam do token); C5 antes de C6; C7 e C8 só precisam de C3 e do servidor falso (não dependem de Blockchain Service nem do Lucas); C9 depende de C1 a C6. A **ligação com o External Data Service real** fica fora desta lista: depende do módulo do Lucas existir (H06.1 #879) e entra no teste de carga H10.2 (#889).
+Dependências: C1 antes de todos; C3 antes de C4 a C8 (precisam do token); C5 antes de C6; C7 e C8 só precisam de C3 e do servidor falso (não dependem de Blockchain Service nem do Lucas); C9 depende de C1 a C6; C10 depende de C3 e do CT24 do External Data Service. A **ligação com o External Data Service real** fica fora desta lista: depende do módulo do Lucas existir (H06.1 #879) e entra no teste de carga H10.2 (#889).

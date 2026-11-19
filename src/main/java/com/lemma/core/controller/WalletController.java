@@ -5,8 +5,9 @@ import com.lemma.core.service.WalletService;
 import io.javalin.http.Context;
 
 /**
- * Rota de saldo, protegida pelo TokenFilter. Sem regra de negócio: lê o id do
- * usuário do token, chama o service e devolve o DTO. O Frontend não informa endereço.
+ * Rotas da carteira (saldo e histórico), protegidas pelo TokenFilter. Sem regra de
+ * negócio: lê o id do usuário do token, chama o service e devolve o DTO. O Frontend
+ * não informa endereço.
  */
 public class WalletController {
 
@@ -19,5 +20,10 @@ public class WalletController {
     /** CT6: GET /wallet/balance → 200 { ethereumAddress, balanceEth, network }. */
     public void balance(Context ctx) {
         ctx.json(walletService.getBalance(TokenFilter.userId(ctx)));
+    }
+
+    /** CT26: GET /wallet/transactions → 200 { ethereumAddress, network, transactions }. */
+    public void transactions(Context ctx) {
+        ctx.json(walletService.getTransactions(TokenFilter.userId(ctx)));
     }
 }

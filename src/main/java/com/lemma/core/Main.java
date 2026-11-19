@@ -1,5 +1,6 @@
 package com.lemma.core;
 
+import com.lemma.core.client.AddressHistoryClient;
 import com.lemma.core.client.BlockchainClient;
 import com.lemma.core.client.HttpBlockchainClient;
 import com.lemma.core.client.MarketDataClient;
@@ -78,10 +79,12 @@ public class Main {
                 config.serviceKey(), Duration.ofSeconds(config.blockchainTimeoutSeconds()));
         MarketDataClient marketDataClient = new MarketDataClient(config.externalDataServiceUrl(),
                 config.serviceKey(), Duration.ofSeconds(config.externalDataTimeoutSeconds()));
+        AddressHistoryClient addressHistoryClient = new AddressHistoryClient(config.externalDataServiceUrl(),
+                config.serviceKey(), Duration.ofSeconds(config.externalDataTimeoutSeconds()));
         JwtService jwtService = new JwtService(config.jwtSecret(), config.jwtTtlMinutes(), Clock.systemUTC());
         UserService userService = new UserService(userRepository, passwordHasher, blockchainClient);
         AuthService authService = new AuthService(userRepository, passwordHasher, jwtService);
-        WalletService walletService = new WalletService(userRepository, blockchainClient);
+        WalletService walletService = new WalletService(userRepository, blockchainClient, addressHistoryClient);
         TransactionService transactionService = new TransactionService(userRepository, transactionRepository,
                 blockchainClient, Clock.systemUTC());
         SlidingWindowRateLimiter marketRateLimiter = new SlidingWindowRateLimiter(config.marketRateLimitMax(),
@@ -176,6 +179,7 @@ public class Main {
 
         // Com token (fora de PUBLIC_ROUTES).
         javalin.routes.get("/wallet/balance", controllers.wallet()::balance);              // CT6
+        javalin.routes.get("/wallet/transactions", controllers.wallet()::transactions);    // CT26
         javalin.routes.post("/transactions", controllers.transaction()::send);             // CT9
         javalin.routes.get("/transactions/{taskId}", controllers.transaction()::get);      // CT13
         javalin.routes.get("/market/{assetId}", controllers.market()::get);                // CT17

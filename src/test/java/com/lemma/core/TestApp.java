@@ -1,5 +1,6 @@
 package com.lemma.core;
 
+import com.lemma.core.client.AddressHistoryClient;
 import com.lemma.core.client.FakeExternalDataService;
 import com.lemma.core.client.MarketDataClient;
 import com.lemma.core.controller.AuthController;
@@ -37,7 +38,7 @@ import java.util.function.Consumer;
  * Sobe o Core API numa porta livre com a mesma configuração do Main
  * (Main.configure), services reais e dependências falsas: repositories em memória,
  * Blockchain Service falso, External Data Service falso (servidor HTTP do JDK, o
- * mesmo MarketDataClient do Main), bcrypt de custo 4, segredo de JWT e chave de
+ * mesmo MarketDataClient e o mesmo AddressHistoryClient do Main), bcrypt de custo 4, segredo de JWT e chave de
  * serviço de teste e relógio fixo. O limite do mercado usa um relógio de teste
  * próprio (marketClock), que só anda quando o teste manda. Usado pelos testes HTTP.
  */
@@ -61,7 +62,7 @@ public final class TestApp {
     public final InMemoryUserRepository repository = new InMemoryUserRepository();
     public final InMemoryEthTransactionRepository transactions = new InMemoryEthTransactionRepository();
     public final FakeBlockchainClient blockchain = new FakeBlockchainClient();
-    /** External Data Service falso; recebe a mesma chave de serviço, como no Main. Fechado no stop. */
+    /** External Data Service falso (CT18 e CT24); recebe a mesma chave de serviço, como no Main. Fechado no stop. */
     public final FakeExternalDataService marketData = new FakeExternalDataService(SERVICE_KEY);
     public final PasswordHasher hasher = new PasswordHasher(4);
     public final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
@@ -96,7 +97,8 @@ public final class TestApp {
     public TestApp start(Consumer<JavalinConfig> extraRoutes) {
         UserService userService = new UserService(repository, hasher, blockchain);
         AuthService authService = new AuthService(repository, hasher, jwtService);
-        WalletService walletService = new WalletService(repository, blockchain);
+        WalletService walletService = new WalletService(repository, blockchain,
+                new AddressHistoryClient(marketData.baseUrl(), SERVICE_KEY, Duration.ofSeconds(2)));
         TransactionService transactionService = new TransactionService(repository, transactions, blockchain, clock);
         MarketService marketService = new MarketService(
                 new MarketDataClient(marketData.baseUrl(), SERVICE_KEY, Duration.ofSeconds(2)),
