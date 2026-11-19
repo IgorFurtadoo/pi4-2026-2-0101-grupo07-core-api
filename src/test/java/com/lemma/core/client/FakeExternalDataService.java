@@ -14,7 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * External Data Service falso (CT18) para os testes: servidor HTTP do próprio JDK
+ * External Data Service falso (CT18 e CT24) para os testes: servidor HTTP do próprio JDK
  * em 127.0.0.1, porta livre, sem rede externa.
  *
  * Responde a qualquer caminho com o status e o corpo programados por
@@ -100,6 +100,27 @@ public final class FakeExternalDataService implements AutoCloseable {
     public static String body(String assetId, String currency, String currentPriceJson, String seriesJson) {
         return "{\"assetId\":\"" + assetId + "\",\"currency\":\"" + currency + "\",\"currentPrice\":"
                 + currentPriceJson + ",\"series\":" + seriesJson + "}";
+    }
+
+    /** Hash válido de exemplo (CT24), com o dígito final dado para distinguir itens. */
+    public static String hash(int n) {
+        return "0x336be534b01ce174e559209ffdde79b15ffeb5f47a66b16f77737d45fcef759" + Integer.toHexString(n % 16);
+    }
+
+    /** Contraparte válida de exemplo (CT24), em caixa mista como o Blockscout manda. */
+    public static final String COUNTERPARTY = "0x6bdB5129e34773c822044a2078e6ba1576A258E6";
+
+    /** Um item válido do CT24, com o amountEth em texto, como o External Data Service manda. */
+    public static String historyItem(int n, String amountEth) {
+        return "{\"hash\":\"" + hash(n) + "\",\"direction\":\"RECEIVED\",\"counterpartyAddress\":\""
+                + COUNTERPARTY + "\",\"amountEth\":\"" + amountEth + "\",\"timestamp\":\"2026-11-16T04:12:00Z\","
+                + "\"status\":\"CONFIRMED\"}";
+    }
+
+    /** Corpo 200 do CT24 com a lista JSON dada como está. */
+    public static String historyBody(String ethereumAddress, String transactionsJson) {
+        return "{\"ethereumAddress\":\"" + ethereumAddress + "\",\"network\":\"SEPOLIA\",\"transactions\":"
+                + transactionsJson + "}";
     }
 
     /** Programa a resposta de todas as requisições seguintes. */
