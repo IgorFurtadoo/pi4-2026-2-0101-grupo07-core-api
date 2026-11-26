@@ -223,4 +223,31 @@ class AppConfigTest {
         assertFalse(text.contains("blockchain-service"));
         assertFalse(text.contains("external-data-service"));
     }
+
+    @Test
+    void taskSocketUsesDefaultsWhenAbsent() {
+        AppConfig config = AppConfig.fromEnv(validEnv());
+
+        assertEquals("blockchain-service", config.taskSocketHost());
+        assertEquals(9091, config.taskSocketPort());
+    }
+
+    @Test
+    void taskSocketAcceptsCustomHostAndPortZero() {
+        Map<String, String> env = validEnv();
+        env.put("TASK_SOCKET_HOST", " outro-host ");
+        env.put("TASK_SOCKET_PORT", "0");
+
+        AppConfig config = AppConfig.fromEnv(env);
+        assertEquals("outro-host", config.taskSocketHost());
+        assertEquals(0, config.taskSocketPort());
+    }
+
+    @Test
+    void rejectsInvalidTaskSocketPort() {
+        for (String value : new String[]{"-1", "65536", "abc"}) {
+            assertEquals("TASK_SOCKET_PORT inválida: precisa estar entre 0 (desativa) e 65535",
+                    failureMessage(envWith("TASK_SOCKET_PORT", value)), value);
+        }
+    }
 }

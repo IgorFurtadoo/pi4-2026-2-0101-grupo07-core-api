@@ -28,7 +28,7 @@ Os bancos não têm porta publicada.
 
 ## Este módulo: Core API
 
-Serviço Java 21 (Javalin e Hibernate) com o seu banco MySQL. É o ponto único de contato do Frontend: cadastro, login com JWT, associação do usuário à carteira, orquestração do saldo e do envio, estado das transações (webhook e consulta ativa), limite de consultas de mercado e histórico da carteira. Chama o Blockchain Service e o External Data Service pela rede `lemma-dev`.
+Serviço Java 21 (Javalin e Hibernate) com o seu banco MySQL. É o ponto único de contato do Frontend: cadastro, login com JWT, associação do usuário à carteira, orquestração do saldo e do envio, estado das transações (webhook, canal de socket e consulta ativa), limite de consultas de mercado e histórico da carteira. Chama o Blockchain Service e o External Data Service pela rede `lemma-dev`.
 
 Contratos em `docs/contratos/`, ADR 0004 em `docs/adr/` e desenho do módulo em `docs/desenho-core-api.md`.
 
@@ -53,6 +53,8 @@ Pré-requisito: Docker com o plugin Compose.
    - `SERVICE_KEY`: o mesmo valor do Blockchain Service e do External Data Service.
 
    Mantenha `SERVER_PORT=8080`. O serviço não sobe com valor de exemplo; o motivo aparece no log.
+
+   Opcionais: `TASK_SOCKET_HOST` (padrão `blockchain-service`) e `TASK_SOCKET_PORT` (padrão `9091`; `0` desativa), do canal de socket que recebe o aviso de task concluída do Blockchain Service (CT27), além do webhook. A assinatura usa a mesma `SERVICE_KEY`. Com o Blockchain Service fora do ar, o log traz um aviso por queda e o Core API tenta de novo a cada 5 s.
 
 3. Suba o serviço e o banco:
 

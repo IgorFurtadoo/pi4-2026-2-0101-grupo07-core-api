@@ -78,6 +78,8 @@ O `core-api` só sobe depois do banco saudável (`depends_on` com `service_healt
 | `MARKET_RATE_LIMIT_MAX` | Requisições ao CT17 por janela | `10` |
 | `MARKET_RATE_LIMIT_WINDOW_SECONDS` | Tamanho da janela | `60` |
 | `CORS_ALLOWED_ORIGIN` | Origem do Frontend | `http://localhost:5173` |
+| `TASK_SOCKET_HOST` | Opcional: host do canal de socket do Blockchain Service (CT27) | `blockchain-service` (padrão) |
+| `TASK_SOCKET_PORT` | Opcional: porta do canal de socket; `0` desativa | `9091` (padrão) |
 
 O `Main` lê tudo em uma classe `AppConfig` e falha na subida se faltar variável, como no Blockchain Service. O `toString` da configuração não imprime segredos nem URLs.
 
@@ -126,6 +128,9 @@ core/
     JwtService.java               emite e valida o token
     TokenFilter.java              exige o token e põe o userId no contexto
     ServiceKeyFilter.java         exige X-Service-Key (só no webhook)
+  socket/
+    Partner.java                  conexão com o servidor de socket (CT27)
+    TaskNoticeListener.java       thread que assina e aplica os avisos (CT27 → regra do CT15)
   ratelimit/SlidingWindowRateLimiter.java
   exception/ApiException.java
 ```
@@ -291,6 +296,22 @@ flowchart TD
 `POST /webhooks/tasks`, com `X-Service-Key`. Validação do corpo: `taskId`, `status` (`CONFIRMED` ou `FAILED`) e `updatedAt` obrigatórios; `failureReason` obrigatório quando `FAILED`; qualquer falha → 400 `REQUEST_INVALID`. Task desconhecida → 404 `TRANSACTION_NOT_FOUND` (o Blockchain Service só registra em log; a corrida em que o aviso chega antes do `INSERT` do CT9 se resolve pelo CT13). Task conhecida → `applyTaskState` e **sempre 204**, tenha alterado algo ou não (reenvio seguro, ficha CT15). Notificação que contradiz um estado final já gravado (por exemplo `FAILED` sobre `CONFIRMED`) não altera nada, e vai ao log em `WARN`: não deveria existir.
 
 O Blockchain Service avisa em **toda** transição final, inclusive `FAILED` sem `transactionHash` (`REJECTED_BY_NETWORK` e `INTERNAL_ERROR`). O receptor tem de aceitar isso. Essa é a versão emendada do CT15 que existe hoje só no repositório `-blockchain` (passo 7 de lá): a ficha do dono (este repositório) precisa receber a mesma emenda no passo C6.
+
+### 8.5.1 Aviso também por socket (CT27, H08.2)
+
+Além do webhook, que continua igual, o Core API recebe o aviso de task concluída por um canal de Socket TCP com serialização de objetos Java (ADR 0008 e CT27, no repositório do Blockchain Service), no modelo do exemplo do professor. O Blockchain Service é o "Servidor" e o Core API é o "Cliente": uma thread daemon (`task-notice-listener`) conecta em `TASK_SOCKET_HOST:TASK_SOCKET_PORT`, cria o `ObjectOutputStream` antes do `ObjectInputStream`, envia `SubscribeRequest` com a `SERVICE_KEY` e fica lendo. Cada `TaskCompletedNotice` vira um `TaskCompletedRequest` e passa por `TransactionService.notifyTaskCompleted`, a mesma chamada do `WebhookController`: mesma validação e mesma regra de convergência. O que no webhook seria 400 ou 404 aqui é ignorado com `WARN` (só `taskId`, `status` e o código), sem derrubar a thread. `ShutdownNotice` ou qualquer queda: fecha, espera 5 s e reconecta; o `WARN` de indisponível sai uma vez por queda. Sem ack: o que se perder com o canal fora do ar é recuperado pelo webhook ou pelo CT13. As quatro mensagens (`com.lemma.socket`) são cópias idênticas das do Blockchain Service.
+
+| Exemplo do professor (cliente) | Lemma (Core API) |
+|---|---|
+| `Comunicado` | `com.lemma.socket.Message` |
+| `ComunicadoDeDesligamento` | `com.lemma.socket.ShutdownNotice` |
+| (pedidos do cliente) | `com.lemma.socket.SubscribeRequest` |
+| `Resultado` | `com.lemma.socket.TaskCompletedNotice` |
+| `Parceiro` | `com.lemma.core.socket.Partner` |
+| `TratadoraDeComunicadoDeDesligamento` | `com.lemma.core.socket.TaskNoticeListener` |
+| `Cliente` (abre o socket e os streams) | `TaskNoticeListener.run` e `Main.startTaskNoticeListener` |
+
+Filtro de desserialização, aplicado logo depois de criar o `ObjectInputStream`: `maxdepth=5;com.lemma.socket.*;java.lang.String;!*`. **Sem `maxbytes` nem `maxrefs`**: o JDK conta esses limites no stream inteiro, e não por mensagem (o `reset()` do servidor não os zera); numa conexão longa, como esta, `maxbytes=4096` derrubaria o cliente depois de uns 10 avisos.
 
 ### 8.6 Mercado e rate limiting (CT17)
 

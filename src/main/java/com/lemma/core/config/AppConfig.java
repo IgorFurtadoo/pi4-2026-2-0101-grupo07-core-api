@@ -10,7 +10,8 @@ import java.util.Map;
 /**
  * Configuração do serviço, lida das variáveis de ambiente (seção 3.2 do desenho).
  *
- * Todas as variáveis são obrigatórias. Se faltar alguma ou o valor for inválido,
+ * Todas as variáveis são obrigatórias, menos TASK_SOCKET_HOST e TASK_SOCKET_PORT
+ * (canal de socket CT27), que têm padrão. Se faltar alguma ou o valor for inválido,
  * {@link #fromEnv(Map)} lança {@link IllegalStateException} listando todos os
  * problemas de uma vez. A mensagem cita só o nome da variável, nunca o valor,
  * para não vazar segredo nem URL em log.
@@ -29,7 +30,9 @@ public record AppConfig(
         int externalDataTimeoutSeconds,
         int marketRateLimitMax,
         int marketRateLimitWindowSeconds,
-        String corsAllowedOrigin) {
+        String corsAllowedOrigin,
+        String taskSocketHost,
+        int taskSocketPort) {
 
     /** HS256 com segredo de no mínimo 32 bytes (seção 9 do desenho). */
     static final int JWT_SECRET_MIN_BYTES = 32;
@@ -41,6 +44,10 @@ public record AppConfig(
     static final String EXAMPLE_DB_PASSWORD = "TROCAR_senha_do_banco";
 
     private static final int MAX_PORT = 65535;
+
+    // Canal de socket do Blockchain Service (CT27). Porta 0 desativa o canal.
+    static final String DEFAULT_TASK_SOCKET_HOST = "blockchain-service";
+    static final int DEFAULT_TASK_SOCKET_PORT = 9091;
 
     public static AppConfig fromEnv(Map<String, String> env) {
         Reader reader = new Reader(env);
@@ -61,6 +68,8 @@ public record AppConfig(
         int marketRateLimitMax = reader.positiveInt("MARKET_RATE_LIMIT_MAX");
         int marketRateLimitWindowSeconds = reader.positiveInt("MARKET_RATE_LIMIT_WINDOW_SECONDS");
         String corsAllowedOrigin = reader.origin("CORS_ALLOWED_ORIGIN");
+        String taskSocketHost = reader.optionalText("TASK_SOCKET_HOST", DEFAULT_TASK_SOCKET_HOST);
+        int taskSocketPort = reader.optionalPortOrZero("TASK_SOCKET_PORT", DEFAULT_TASK_SOCKET_PORT);
 
         if (!reader.problems.isEmpty()) {
             throw new IllegalStateException(String.join("; ", reader.problems));
@@ -69,12 +78,14 @@ public record AppConfig(
         return new AppConfig(serverPort, dbUrl, dbUser, dbPassword, jwtSecret, jwtTtlMinutes,
                 serviceKey, blockchainServiceUrl, externalDataServiceUrl,
                 blockchainTimeoutSeconds, externalDataTimeoutSeconds,
-                marketRateLimitMax, marketRateLimitWindowSeconds, corsAllowedOrigin);
+                marketRateLimitMax, marketRateLimitWindowSeconds, corsAllowedOrigin,
+                taskSocketHost, taskSocketPort);
     }
 
     /**
      * Não imprime segredos (senha do banco, segredo do JWT, chave de serviço) nem URLs:
      * uma URL JDBC pode carregar credencial, e as URLs dos outros módulos não vão ao log.
+     * Do canal de socket, só a porta: o host é endereço de outro módulo.
      */
     @Override
     public String toString() {
@@ -85,7 +96,8 @@ public record AppConfig(
                 + ", externalDataTimeoutSeconds=" + externalDataTimeoutSeconds
                 + ", marketRateLimitMax=" + marketRateLimitMax
                 + ", marketRateLimitWindowSeconds=" + marketRateLimitWindowSeconds
-                + ", corsAllowedOrigin=" + corsAllowedOrigin + "]";
+                + ", corsAllowedOrigin=" + corsAllowedOrigin
+                + ", taskSocketPort=" + taskSocketPort + "]";
     }
 
     /** Lê cada variável e acumula os problemas encontrados, sem parar no primeiro. */
@@ -104,6 +116,33 @@ public record AppConfig(
                 return null;
             }
             return value.trim();
+        }
+
+        /** Opcional: ausente ou em branco vira o padrão. */
+        String optionalText(String name, String defaultValue) {
+            String value = env.get(name);
+            if (value == null || value.isBlank()) {
+                return defaultValue;
+            }
+            return value.trim();
+        }
+
+        /** Porta opcional: ausente ou em branco vira o padrão; 0 é aceito (desativa). */
+        int optionalPortOrZero(String name, int defaultValue) {
+            String value = optionalText(name, null);
+            if (value == null) {
+                return defaultValue;
+            }
+            try {
+                int number = Integer.parseInt(value);
+                if (number >= 0 && number <= MAX_PORT) {
+                    return number;
+                }
+            } catch (NumberFormatException e) {
+                // cai na mensagem abaixo
+            }
+            problems.add(name + " inválida: precisa estar entre 0 (desativa) e " + MAX_PORT);
+            return 0;
         }
 
         int positiveInt(String name) {

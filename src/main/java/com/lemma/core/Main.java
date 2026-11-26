@@ -27,6 +27,7 @@ import com.lemma.core.service.MarketService;
 import com.lemma.core.service.TransactionService;
 import com.lemma.core.service.UserService;
 import com.lemma.core.service.WalletService;
+import com.lemma.core.socket.TaskNoticeListener;
 import io.javalin.Javalin;
 import io.javalin.config.JavalinConfig;
 import org.hibernate.SessionFactory;
@@ -101,15 +102,36 @@ public class Main {
         Javalin app = createApp(config.corsAllowedOrigin(), jwtService, config.serviceKey(), controllers)
                 .start(config.serverPort());
 
+        // Canal de socket do Blockchain Service (CT27), só depois de o Javalin estar no ar.
+        TaskNoticeListener taskNoticeListener = startTaskNoticeListener(config, transactionService);
+
         // Desligamento limpo: o docker stop manda SIGTERM, a JVM roda este gancho,
         // o Javalin termina as requisições em andamento e só depois o banco é fechado.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Desligando o Core API");
+            if (taskNoticeListener != null) {
+                taskNoticeListener.shutdown();
+            }
             app.stop();
             sessionFactory.close();
         }));
 
         log.info("Core API no ar na porta {} com {}", config.serverPort(), config);
+    }
+
+    /**
+     * Sobe a thread que ouve os avisos de task concluída pelo socket (CT27), com a
+     * mesma SERVICE_KEY do webhook. TASK_SOCKET_PORT=0 desativa: devolve null.
+     */
+    static TaskNoticeListener startTaskNoticeListener(AppConfig config, TransactionService transactionService) {
+        if (config.taskSocketPort() == 0) {
+            log.info("socket: canal de avisos desativado (TASK_SOCKET_PORT=0)");
+            return null;
+        }
+        TaskNoticeListener listener = new TaskNoticeListener(config.taskSocketHost(), config.taskSocketPort(),
+                config.serviceKey(), transactionService, TaskNoticeListener.RETRY_DELAY);
+        listener.start();
+        return listener;
     }
 
     /** Os controllers montados, para não passar um parâmetro por controller. */
